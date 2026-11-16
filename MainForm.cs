@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using GgpkColorizer.Archive;
 
 namespace GgpkColorizer;
 
@@ -25,6 +26,8 @@ public sealed class MainForm : Form
     private readonly TabPage _comparisonTab = new();
     private readonly TabPage _historyTab = new();
     private readonly TextBox _search = new() { Width = 260 };
+    private readonly Label _gameLanguageLabel = new() { AutoSize = true, Margin = new Padding(3, 7, 3, 0) };
+    private readonly ComboBox _gameLanguage = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150 };
     private readonly ComboBox _group = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 165 };
     private readonly FlowLayoutPanel _altarFilters = new() { AutoSize = true, WrapContents = false, Visible = false };
     private readonly Label _factionLabel = new() { AutoSize = true, Margin = new Padding(3, 7, 3, 0) };
@@ -67,6 +70,7 @@ public sealed class MainForm : Form
     private bool _writing;
     private bool _closePending;
     private bool _changingLanguage;
+    private bool _changingGameLanguage;
     private bool _changingAltarFilters;
 
     public MainForm(AppController controller)
@@ -160,7 +164,16 @@ public sealed class MainForm : Form
             _sideLabel,
             _side,
         ]);
-        filters.Controls.AddRange([_search, _group, _altarFilters, _color, _setColor, _clearColor]);
+        filters.Controls.AddRange([
+            _search,
+            _gameLanguageLabel,
+            _gameLanguage,
+            _group,
+            _altarFilters,
+            _color,
+            _setColor,
+            _clearColor,
+        ]);
         _catalogNoticesGroup.Controls.Add(_catalogNotices);
         var split = new SplitContainer
         {
@@ -234,6 +247,7 @@ public sealed class MainForm : Form
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "time", Width = 145 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "action", Width = 75 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "status", Width = 105 });
+        _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "language", Width = 105 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "text", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 35 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "before", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 25 });
         _historyGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "after", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, FillWeight = 25 });
@@ -247,6 +261,7 @@ public sealed class MainForm : Form
         _compare.Click += async (_, _) => await CompareAsync();
         _language.SelectedIndexChanged += (_, _) => ChangeLanguage();
         _search.TextChanged += (_, _) => PopulateModifiers();
+        _gameLanguage.SelectedIndexChanged += (_, _) => ChangeGameLanguage();
         _group.SelectedIndexChanged += (_, _) => ChangeGroupFilter();
         _faction.SelectedIndexChanged += (_, _) => ChangeAltarFilter();
         _target.SelectedIndexChanged += (_, _) => ChangeAltarFilter();
@@ -272,6 +287,7 @@ public sealed class MainForm : Form
         _language.SelectedIndex = _controller.Settings.Language.Equals("en", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
         _changingLanguage = false;
         _archivePath.Text = _controller.Settings.ArchivePath;
+        PopulateGameLanguages();
         PopulateGroups();
         PopulateAltarFilters();
         PopulateColors();
@@ -293,6 +309,7 @@ public sealed class MainForm : Form
         _comparisonTab.Text = _text["tab.comparison"];
         _historyTab.Text = _text["tab.history"];
         _search.PlaceholderText = _text["search"];
+        _gameLanguageLabel.Text = _text["gameLanguage"];
         _factionLabel.Text = _text["filter.faction"];
         _targetLabel.Text = _text["filter.target"];
         _sideLabel.Text = _text["filter.side"];
@@ -318,11 +335,13 @@ public sealed class MainForm : Form
         SetColumnText(_historyGrid, "time", "column.time");
         SetColumnText(_historyGrid, "action", "column.action");
         SetColumnText(_historyGrid, "status", "column.status");
+        SetColumnText(_historyGrid, "language", "column.language");
         SetColumnText(_historyGrid, "text", "column.text");
         SetColumnText(_historyGrid, "before", "column.before");
         SetColumnText(_historyGrid, "after", "column.after");
         SetColumnText(_historyGrid, "detail", "column.detail");
         ApplyAccessibilityText();
+        PopulateGameLanguages();
         PopulateGroups();
         PopulateAltarFilters();
         PopulateCatalogNotices();
@@ -341,6 +360,7 @@ public sealed class MainForm : Form
         _update.AccessibleName = _text["update"];
         _compare.AccessibleName = _text["compare"];
         _search.AccessibleName = _text["search"];
+        _gameLanguage.AccessibleName = _text["gameLanguage"];
         _group.AccessibleName = _text["column.group"];
         _faction.AccessibleName = _text["filter.faction"];
         _target.AccessibleName = _text["filter.target"];
@@ -366,6 +386,29 @@ public sealed class MainForm : Form
     }
 
     private void SetColumnText(DataGridView grid, string name, string textKey) => grid.Columns[name].HeaderText = _text[textKey];
+
+    private void PopulateGameLanguages()
+    {
+        string selected = (_gameLanguage.SelectedItem as Choice)?.Code ??
+            _controller.Settings.GameLanguage;
+        _changingGameLanguage = true;
+        try
+        {
+            _gameLanguage.BeginUpdate();
+            _gameLanguage.Items.Clear();
+            _gameLanguage.Items.AddRange([
+                new Choice("Traditional Chinese", _text["gameLanguage.traditionalChinese"]),
+                new Choice("English", _text["gameLanguage.english"]),
+            ]);
+            _gameLanguage.SelectedItem = _gameLanguage.Items.Cast<Choice>()
+                .FirstOrDefault(choice => choice.Code == selected) ?? _gameLanguage.Items[0];
+            _gameLanguage.EndUpdate();
+        }
+        finally
+        {
+            _changingGameLanguage = false;
+        }
+    }
 
     private void PopulateGroups()
     {
@@ -442,6 +485,8 @@ public sealed class MainForm : Form
     private void PopulateModifiers()
     {
         string query = _search.Text.Trim();
+        string gameLanguage = (_gameLanguage.SelectedItem as Choice)?.Code ??
+            "Traditional Chinese";
         string group = SelectedCode(_group);
         string faction = SelectedCode(_faction);
         string target = SelectedCode(_target);
@@ -455,7 +500,8 @@ public sealed class MainForm : Form
         {
             foreach (Modifier modifier in _controller.Catalog.Items)
             {
-                if (!MatchesGroup(modifier, group) ||
+                if (!modifier.Language.Equals(gameLanguage, StringComparison.Ordinal) ||
+                    !MatchesGroup(modifier, group) ||
                     !MatchesAltarFilters(modifier, group, faction, target, side))
                     continue;
                 string display = Display(modifier.Template);
@@ -596,9 +642,14 @@ public sealed class MainForm : Form
                 change.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
                 _text[change.UndoOf is null ? "action.change" : "action.undo"],
                 _text.Status(change.Status),
+                DisplayHistoryLanguage(change),
                 Display(change.Modifier.Template),
-                Display(change.Before),
-                Display(change.After),
+                change.RuleChanges.Count > 1
+                    ? string.Join(" / ", change.RuleChanges.Select(rule => Display(rule.Before)))
+                    : Display(change.Before),
+                change.RuleChanges.Count > 1
+                    ? string.Join(" / ", change.RuleChanges.Select(rule => Display(rule.After)))
+                    : Display(change.After),
                 change.Detail);
             _historyGrid.Rows[index].Tag = change;
         }
@@ -628,11 +679,14 @@ public sealed class MainForm : Form
             [
                 Display(modifier.Template),
                 "",
+                $"{_text["preview.language"]}: {DisplayGameLanguage(modifier.Language)}",
                 $"{_text["preview.source"]}: {modifier.ResourcePath}",
                 $"{_text["preview.stats"]}: {string.Join(", ", modifier.StatIds)}",
                 $"{_text["preview.variant"]}: {modifier.VariantKey}",
                 $"{_text["preview.comparison"]}: {_text.Status(comparison?.Status ?? "unchecked")}",
             ];
+            if (AltarResistanceScope.IsScoped(modifier))
+                previewLines.Add(_text["preview.altarResistanceScope"]);
             if (modifier.AltarUses.Count > 0)
             {
                 previewLines.Add("");
@@ -659,6 +713,18 @@ public sealed class MainForm : Form
             "unmatched" or "different" => 1,
             _ => 0,
         }).FirstOrDefault();
+
+    private string DisplayHistoryLanguage(ChangeRecord change) =>
+        change.RuleChanges.Count > 1
+            ? _text["gameLanguage.both"]
+            : DisplayGameLanguage(change.Modifier.Language);
+
+    private string DisplayGameLanguage(string language) => language switch
+    {
+        "Traditional Chinese" => _text["gameLanguage.traditionalChinese"],
+        "English" => _text["gameLanguage.english"],
+        _ => language,
+    };
 
     private static void SetNotices(GroupBox group, TextBox textBox, IEnumerable<string> notices)
     {
@@ -930,6 +996,15 @@ public sealed class MainForm : Form
         TrySaveSettings();
         _text = UiText.For(language.Code);
         ApplyLanguage();
+    }
+
+    private void ChangeGameLanguage()
+    {
+        if (_changingGameLanguage || _gameLanguage.SelectedItem is not Choice language)
+            return;
+        _controller.Settings.GameLanguage = language.Code;
+        TrySaveSettings();
+        PopulateModifiers();
     }
 
     private void OpenComparisonSource(object? sender, DataGridViewCellEventArgs eventArgs)

@@ -26,6 +26,8 @@ public sealed class AppController
             Settings.ArchivePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
                 "Grinding Gear Games", "Path of Exile", "Content.ggpk");
         SynchronizeUndoRules();
+        MigrateResistanceRules(Catalog);
+        ImportTraditionalChineseRules(Catalog);
     }
 
     public void SaveSettings() => storage.Save("settings.json", Settings);
@@ -58,6 +60,8 @@ public sealed class AppController
             SynchronizeUndoRules();
             storage.Save("catalog.json", catalog);
             Catalog = catalog;
+            MigrateResistanceRules(catalog);
+            ImportTraditionalChineseRules(catalog);
             Settings.ArchivePath = path;
             SaveSettings();
             return catalog;
@@ -89,6 +93,8 @@ public sealed class AppController
         var edits = snapshot.Items.Where(item => selected.Contains(item.Key) && Settings.Rules.ContainsKey(item.Key))
             .Select(item => new PatchWriter.Edit(item, item.Template,
                 ColorMarkup.Apply(item.Template, Settings.Rules[item.Key]), AllowOurColor: true)).ToList();
+        if (edits.Any(edit => AltarResistanceScope.IsShared(edit.Modifier)))
+            throw new InvalidOperationException("Refresh the local catalog to use altar-only resistance colors.");
         if (edits.Count == 0) return new OperationResult(0, 0, ["No color rules were selected."]);
         await archiveGate.WaitAsync(cancellationToken);
         try
@@ -102,6 +108,7 @@ public sealed class AppController
                 edit.Replacement != ColorMarkup.Apply(edit.Modifier.Template, color));
             if (edits.Count == 0) return new OperationResult(0, keys.Count, notices);
             OperationResult result = await Task.Run(() => writer.Apply(path, codec, edits, progress, cancellationToken));
+            SynchronizeUndoRules();
             result.Notices.AddRange(notices);
             return result;
         }
@@ -123,19 +130,22 @@ public sealed class AppController
             SynchronizeUndoRules();
             var applied = journal.Entries.Where(change => change.Status == "applied" && change.UndoOf is null &&
                 PatchWriter.SamePath(change.ArchivePath, path)).ToList();
-            var latest = applied.GroupBy(change => change.Modifier.Key)
+            var latest = applied.GroupBy(UndoTarget)
                 .ToDictionary(group => group.Key, group => group.Last().Id);
             var targets = applied.Where(change => selectedIds.Contains(change.Id)).ToList();
             var edits = new List<PatchWriter.Edit>();
             foreach (var change in targets)
             {
-                if (latest[change.Modifier.Key] != change.Id)
+                if (latest[UndoTarget(change)] != change.Id)
                 {
                     notices.Add("Undo the most recent change to this modifier first: " + change.Modifier.Template);
                     continue;
                 }
                 edits.Add(new PatchWriter.Edit(change.Modifier, change.After, change.Before,
-                    AllowOurColor: false, UndoOf: change.Id));
+                    AllowOurColor: false, UndoOf: change.Id,
+                    ExpectedBlock: change.AfterBlock, ReplacementBlock: change.BeforeBlock,
+                    RuleChanges: change.RuleChanges.Select(rule =>
+                        new RuleChange(rule.Key, rule.After, rule.Before)).ToList()));
             }
             OperationResult result = edits.Count == 0 ? new OperationResult(0, targets.Count, [])
                 : await Task.Run(() => writer.Apply(path, codec, edits, progress, cancellationToken));
@@ -146,13 +156,84 @@ public sealed class AppController
         finally { archiveGate.Release(); }
     }
 
+    private void MigrateResistanceRules(ModifierCatalog? catalog)
+    {
+        if (catalog is null) return;
+        bool changed = false;
+        foreach (Modifier item in catalog.Items.Where(AltarResistanceScope.IsScoped))
+        {
+            if (item.LegacySharedKey is not null &&
+                Settings.Rules.TryGetValue(item.LegacySharedKey, out string? color))
+            {
+                Settings.Rules.TryAdd(item.Key, color);
+                Settings.Rules.Remove(item.LegacySharedKey);
+                changed = true;
+            }
+        }
+        if (changed) SaveSettings();
+    }
+
+    private static string UndoTarget(ChangeRecord change) =>
+        change.BeforeBlock is not null && change.AfterBlock is not null
+            ? change.Modifier.ResourcePath + "\n" + string.Join('\n', change.Modifier.StatIds)
+            : change.Modifier.Key;
+
+    private void ImportTraditionalChineseRules(ModifierCatalog? catalog)
+    {
+        if (catalog is null || Settings.TraditionalChineseRulesImported ||
+            !catalog.Items.Any(item => item.Language == "Traditional Chinese")) return;
+        var english = catalog.Items.Where(item => item.Language == "English")
+            .GroupBy(LanguagePairIdentity).ToDictionary(group => group.Key, group => group.ToList());
+        var colors = new Dictionary<string, string>(Settings.Rules);
+        var englishItems = english.Values.SelectMany(items => items).ToList();
+        var englishKeys = englishItems.Select(item => item.Key).ToHashSet();
+        foreach (var saved in Settings.Rules.Where(pair => !englishKeys.Contains(pair.Key)))
+        {
+            ChangeRecord? recorded = journal.Entries.LastOrDefault(change => change.Modifier.Key == saved.Key &&
+                change.Modifier.Language == "English" && change.Status == "applied" && change.UndoOf is null &&
+                change.BeforeBlock is null && PatchWriter.SamePath(change.ArchivePath, catalog.ArchivePath));
+            if (recorded is null) continue;
+            var matches = englishItems.Where(item => item.ResourcePath == recorded.Modifier.ResourcePath &&
+                item.StatIds.SequenceEqual(recorded.Modifier.StatIds) && item.Template == recorded.After).ToList();
+            // Early catalogs used different keys; live text and the journal must both identify one entry.
+            if (matches.Count == 1) colors.TryAdd(matches[0].Key, saved.Value);
+        }
+        int copied = 0;
+        int ambiguous = 0;
+        foreach (var group in catalog.Items.Where(item => item.Language == "Traditional Chinese")
+            .GroupBy(LanguagePairIdentity))
+        {
+            if (!english.TryGetValue(group.Key, out var candidates)) continue;
+            var configured = candidates.Where(item => colors.ContainsKey(item.Key)).ToList();
+            if (configured.Count == 0) continue;
+            if (candidates.Count != 1 || group.Count() != 1)
+            {
+                ambiguous++;
+                continue;
+            }
+            if (Settings.Rules.TryAdd(group.Single().Key, colors[configured[0].Key])) copied++;
+        }
+        Settings.TraditionalChineseRulesImported = true;
+        SaveSettings();
+        catalog.Notices.Add($"Copied {copied} existing colors to Traditional Chinese. The two languages now have separate rules; {ambiguous} ambiguous groups were left unchanged.");
+    }
+
+    private static string LanguagePairIdentity(Modifier item) =>
+        item.ResourcePath + "\n" + string.Join('\n', item.StatIds) + "\n" + item.Conditions;
+
     private void SynchronizeUndoRules()
     {
         var pending = journal.Entries.Where(change => change.UndoOf is not null &&
             change.Status == "applied" && !change.RulesSynchronized).ToList();
         if (pending.Count == 0) return;
         foreach (ChangeRecord undo in pending)
-            SetRuleFromTemplate(undo.Modifier.Key, undo.After);
+        {
+            if (undo.RuleChanges.Count == 0)
+                SetRuleFromTemplate(undo.Modifier.Key, undo.After);
+            else
+                foreach (RuleChange rule in undo.RuleChanges)
+                    SetRuleFromTemplate(rule.Key, rule.After);
+        }
         SaveSettings();
         foreach (ChangeRecord undo in pending) undo.RulesSynchronized = true;
         journal.Save();

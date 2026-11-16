@@ -162,6 +162,8 @@ public sealed class PoeDbComparison
         }
 
         var items = new List<ComparisonItem>(catalog.Items.Count);
+        if (catalog.Items.Any(item => item.Language != "English"))
+            notices.Add("PoEDB comparison currently checks English only. Traditional Chinese entries remain unchecked; local game text is still editable.");
         foreach (Modifier modifier in catalog.Items)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -187,6 +189,9 @@ public sealed class PoeDbComparison
         IReadOnlyList<Candidate> altarCandidates,
         HashSet<string> failedGroups)
     {
+        if (modifier.Language != "English")
+            return [CreateResult(modifier, "unchecked",
+                detail: "Traditional Chinese text was read from the local game; it was not compared with the English PoEDB pages.")];
         string group = modifier.Group.ToLowerInvariant();
         var results = new List<ComparisonItem>();
 

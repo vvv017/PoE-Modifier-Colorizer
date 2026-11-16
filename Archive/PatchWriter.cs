@@ -6,7 +6,9 @@ namespace GgpkColorizer.Archive;
 internal sealed class PatchWriter(ChangeJournal journal)
 {
     internal sealed record Edit(Modifier Modifier, string Expected, string Replacement,
-        bool AllowOurColor, string? UndoOf = null);
+        bool AllowOurColor, string? UndoOf = null, string? ExpectedBlock = null,
+        string? ReplacementBlock = null, IReadOnlyList<string>? AlsoUndoes = null,
+        IReadOnlyList<RuleChange>? RuleChanges = null);
 
     public OperationResult Apply(string archivePath, string codecPath, IReadOnlyList<Edit> edits,
         IProgress<string>? progress, CancellationToken cancellationToken)
@@ -21,46 +23,95 @@ internal sealed class PatchWriter(ChangeJournal journal)
         try
         {
             using var archive = new GgpkArchive(ownerPath, codecPath, writable: true);
+            cancellationToken.ThrowIfCancellationRequested();
+            bool strictScopedBatch = edits.Any(edit =>
+                AltarResistanceScope.IsScoped(edit.Modifier));
+            IReadOnlyList<Edit> preparedEdits =
+                AltarResistanceScope.PrepareEdits(
+                    archive,
+                    ownerPath,
+                    edits,
+                    journal);
+            cancellationToken.ThrowIfCancellationRequested();
             var writes = new List<(string Path, byte[] Bytes)>();
-            foreach (var group in edits.GroupBy(edit => edit.Modifier.ResourcePath))
+            foreach (var group in preparedEdits.GroupBy(edit => edit.Modifier.ResourcePath))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 progress?.Report($"Preparing {Path.GetFileName(group.Key)}");
                 byte[]? bytes = archive.Read(group.Key);
                 if (bytes is null)
                 {
+                    if (strictScopedBatch)
+                        throw new InvalidDataException($"Missing resource: {group.Key}");
                     notices.Add($"Missing resource: {group.Key}");
                     skipped += group.Count();
                     continue;
                 }
                 var document = StatDescriptionDocument.Parse(group.Key, bytes);
+                string beforeHash = GgpkArchive.Hash(bytes);
                 var replacements = new Dictionary<string, string>();
+                var blockReplacements = new List<Edit>();
                 var resourceChanges = new List<ChangeRecord>();
                 foreach (Edit edit in group)
                 {
+                    if (IsBlockEdit(edit))
+                    {
+                        string statId = edit.Modifier.StatIds.Single();
+                        string currentBlock = document.GetSingleStatBlock(statId);
+                        if (currentBlock == edit.ReplacementBlock)
+                        {
+                            if (edit.UndoOf is not null || edit.AlsoUndoes?.Count > 0)
+                            {
+                                changes.Add(CreateNoOpChange(
+                                    edit,
+                                    ownerPath,
+                                    batchId,
+                                    beforeHash,
+                                    edit.ReplacementBlock));
+                            }
+                            else
+                            {
+                                skipped++;
+                            }
+                            continue;
+                        }
+                        if (currentBlock != edit.ExpectedBlock)
+                        {
+                            string message = "Local description block changed; refresh the catalog " +
+                                $"before changing this modifier: {edit.Modifier.Template}";
+                            if (strictScopedBatch) throw new InvalidDataException(message);
+                            notices.Add(message);
+                            skipped++;
+                            continue;
+                        }
+                        blockReplacements.Add(edit);
+                        resourceChanges.Add(CreateChange(
+                            edit,
+                            ownerPath,
+                            batchId,
+                            beforeHash));
+                        continue;
+                    }
+
                     Modifier? current = document.Find(edit.Modifier.Key);
                     if (current is null)
                     {
-                        notices.Add($"The local modifier was not found: {edit.Modifier.Template}");
+                        string message =
+                            $"The local modifier was not found: {edit.Modifier.Template}";
+                        if (strictScopedBatch) throw new InvalidDataException(message);
+                        notices.Add(message);
                         skipped++;
                         continue;
                     }
                     if (current.Template == edit.Replacement)
                     {
-                        if (edit.UndoOf is not null)
+                        if (edit.UndoOf is not null || edit.AlsoUndoes?.Count > 0)
                         {
-                            string currentHash = GgpkArchive.Hash(bytes);
-                            changes.Add(new ChangeRecord
-                            {
-                                BatchId = batchId,
-                                UndoOf = edit.UndoOf,
-                                ArchivePath = ownerPath,
-                                Modifier = current,
-                                Before = current.Template,
-                                After = current.Template,
-                                BeforeFileHash = currentHash,
-                                AfterFileHash = currentHash,
-                            });
+                            changes.Add(CreateNoOpChange(
+                                edit with { Modifier = current },
+                                ownerPath,
+                                batchId,
+                                beforeHash));
                         }
                         else skipped++;
                         continue;
@@ -69,24 +120,36 @@ internal sealed class PatchWriter(ChangeJournal journal)
                         (edit.AllowOurColor && ColorMarkup.Unwrap(current.Template) == ColorMarkup.Unwrap(edit.Expected));
                     if (!matches)
                     {
-                        notices.Add($"Local text changed; refresh the catalog before changing this modifier: {edit.Modifier.Template}");
+                        string message = "Local text changed; refresh the catalog before " +
+                            $"changing this modifier: {edit.Modifier.Template}";
+                        if (strictScopedBatch) throw new InvalidDataException(message);
+                        notices.Add(message);
                         skipped++;
                         continue;
                     }
                     replacements.Add(current.Key, edit.Replacement);
-                    resourceChanges.Add(new ChangeRecord
-                    {
-                        BatchId = batchId,
-                        UndoOf = edit.UndoOf,
-                        ArchivePath = ownerPath,
-                        Modifier = current,
-                        Before = current.Template,
-                        After = edit.Replacement,
-                        BeforeFileHash = GgpkArchive.Hash(bytes),
-                    });
+                    resourceChanges.Add(CreateChange(
+                        edit with
+                        {
+                            Modifier = current,
+                            Expected = current.Template,
+                        },
+                        ownerPath,
+                        batchId,
+                        beforeHash));
                 }
-                if (replacements.Count == 0) continue;
-                byte[] replacementBytes = document.Replace(replacements);
+                if (replacements.Count == 0 && blockReplacements.Count == 0) continue;
+                byte[] replacementBytes = replacements.Count == 0
+                    ? bytes
+                    : document.Replace(replacements);
+                foreach (Edit edit in blockReplacements)
+                {
+                    document = StatDescriptionDocument.Parse(group.Key, replacementBytes);
+                    replacementBytes = document.ReplaceSingleStatBlock(
+                        edit.Modifier.StatIds.Single(),
+                        edit.ExpectedBlock!,
+                        edit.ReplacementBlock!);
+                }
                 string afterHash = GgpkArchive.Hash(replacementBytes);
                 foreach (var change in resourceChanges) change.AfterFileHash = afterHash;
                 changes.AddRange(resourceChanges);
@@ -163,11 +226,29 @@ internal sealed class PatchWriter(ChangeJournal journal)
                 var document = StatDescriptionDocument.Parse(group.Key, bytes);
                 foreach (ChangeRecord change in group)
                 {
-                    string? current = document.Find(change.Modifier.Key)?.Template;
-                    change.Status = hash == change.AfterFileHash || current == change.After ? "applied"
-                        : hash == change.BeforeFileHash || current == change.Before ? "not-applied"
-                        : "conflict";
-                    change.Detail = change.Status == "conflict" ? "Current text matches neither recorded version." : "";
+                    if (change.BeforeBlock is not null && change.AfterBlock is not null)
+                    {
+                        string statId = change.Modifier.StatIds.Single();
+                        string currentBlock = document.GetSingleStatBlock(statId);
+                        change.Status = currentBlock == change.AfterBlock ? "applied"
+                            : currentBlock == change.BeforeBlock ? "not-applied"
+                            : "conflict";
+                        change.Detail = change.Status == "conflict"
+                            ? "Current description block matches neither recorded version."
+                            : "";
+                    }
+                    else
+                    {
+                        string? current = document.Find(change.Modifier.Key)?.Template;
+                        change.Status = hash == change.AfterFileHash || current == change.After
+                            ? "applied"
+                            : hash == change.BeforeFileHash || current == change.Before
+                                ? "not-applied"
+                                : "conflict";
+                        change.Detail = change.Status == "conflict"
+                            ? "Current text matches neither recorded version."
+                            : "";
+                    }
                     journal.MarkUndoCompleted(change);
                 }
             }
@@ -182,6 +263,60 @@ internal sealed class PatchWriter(ChangeJournal journal)
 
     public static bool SamePath(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsBlockEdit(Edit edit)
+    {
+        bool hasExpected = edit.ExpectedBlock is not null;
+        bool hasReplacement = edit.ReplacementBlock is not null;
+        if (hasExpected != hasReplacement)
+            throw new InvalidDataException(
+                "A description block edit requires both recorded block versions.");
+        if (hasExpected && edit.Modifier.StatIds.Length != 1)
+            throw new InvalidDataException(
+                "A description block edit must target exactly one stat.");
+        return hasExpected;
+    }
+
+    private static ChangeRecord CreateChange(
+        Edit edit,
+        string archivePath,
+        string batchId,
+        string beforeHash) => new()
+        {
+            BatchId = batchId,
+            UndoOf = edit.UndoOf,
+            ArchivePath = archivePath,
+            Modifier = edit.Modifier,
+            Before = edit.Expected,
+            After = edit.Replacement,
+            BeforeBlock = edit.ExpectedBlock,
+            AfterBlock = edit.ReplacementBlock,
+            AlsoUndoes = edit.AlsoUndoes?.ToList() ?? [],
+            RuleChanges = edit.RuleChanges?.ToList() ?? [],
+            BeforeFileHash = beforeHash,
+        };
+
+    private static ChangeRecord CreateNoOpChange(
+        Edit edit,
+        string archivePath,
+        string batchId,
+        string fileHash,
+        string? currentBlock = null) => new()
+        {
+            BatchId = batchId,
+            UndoOf = edit.UndoOf,
+            ArchivePath = archivePath,
+            Modifier = edit.Modifier,
+            Before = edit.Replacement,
+            After = edit.Replacement,
+            BeforeBlock = currentBlock,
+            AfterBlock = currentBlock,
+            AlsoUndoes = edit.AlsoUndoes?.ToList() ?? [],
+            RuleChanges = edit.RuleChanges?.Select(change =>
+                change with { Before = change.After }).ToList() ?? [],
+            BeforeFileHash = fileHash,
+            AfterFileHash = fileHash,
+        };
 
     private static void EnsureGameClosed()
     {

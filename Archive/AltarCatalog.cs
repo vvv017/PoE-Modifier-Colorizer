@@ -29,20 +29,23 @@ internal static class AltarCatalog
 
         // The altar file overrides shared translations for the same stat group.
         var dedicated = result.Where(item => item.Group == "altar")
-            .SelectMany(item => item.AltarUses.Select(use => (use.ModId, Stats: StatGroup(item))))
+            .SelectMany(item => item.AltarUses.Select(use => (use.ModId, item.Language, Stats: StatGroup(item))))
             .ToHashSet();
         result = result.Select(item => item.Group != "shared" ? item : item with
         {
-            AltarUses = item.AltarUses.Where(use => !dedicated.Contains((use.ModId, StatGroup(item)))).ToList(),
+            AltarUses = item.AltarUses.Where(use => !dedicated.Contains((use.ModId, item.Language, StatGroup(item)))).ToList(),
         }).ToList();
 
-        var covered = result.SelectMany(item => item.AltarUses).Select(use => use.ModId)
-            .ToHashSet(StringComparer.Ordinal);
-        var missing = choices.Where(choice => !covered.Contains(choice.Use.ModId)).ToList();
-        notices.Add($"Altar source: {covered.Count}/{choices.Count} local choices have matching English descriptions.");
-        if (missing.Count > 0)
-            notices.Add("Altar choices without a matching description: " +
-                string.Join(", ", missing.Select(choice => choice.Use.ModId)));
+        foreach (var language in result.GroupBy(item => item.Language))
+        {
+            var covered = language.SelectMany(item => item.AltarUses).Select(use => use.ModId)
+                .ToHashSet(StringComparer.Ordinal);
+            var missing = choices.Where(choice => !covered.Contains(choice.Use.ModId)).ToList();
+            notices.Add($"Altar source ({language.Key}): {covered.Count}/{choices.Count} local choices have matching descriptions.");
+            if (missing.Count > 0)
+                notices.Add($"Altar choices without matching descriptions ({language.Key}): " +
+                    string.Join(", ", missing.Select(choice => choice.Use.ModId)));
+        }
         return result;
     }
 

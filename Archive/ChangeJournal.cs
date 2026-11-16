@@ -15,8 +15,10 @@ internal sealed class ChangeJournal
 
     public void MarkUndoCompleted(ChangeRecord undo)
     {
-        if (undo.UndoOf is null || undo.Status != "applied") return;
-        ChangeRecord? original = Entries.FirstOrDefault(item => item.Id == undo.UndoOf);
-        if (original is not null) original.Status = "undone";
+        if (undo.Status != "applied") return;
+        var restoredIds = undo.AlsoUndoes.ToHashSet(StringComparer.Ordinal);
+        if (undo.UndoOf is not null) restoredIds.Add(undo.UndoOf);
+        foreach (ChangeRecord original in Entries.Where(item => restoredIds.Contains(item.Id)))
+            original.Status = "undone";
     }
 }

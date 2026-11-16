@@ -6,11 +6,14 @@ namespace GgpkColorizer.Text;
 
 public sealed class StatDescriptionDocument
 {
+    private const string EnglishLanguage = "English";
+    private const string TraditionalChineseLanguage = "Traditional Chinese";
     private readonly string resourcePath;
     private readonly string text;
     private readonly Encoding encoding;
     private readonly byte[] preamble;
     private readonly Dictionary<string, Entry> entries;
+    private readonly List<StatBlock> statBlocks;
 
     private StatDescriptionDocument(
         string resourcePath,
@@ -19,7 +22,8 @@ public sealed class StatDescriptionDocument
         byte[] preamble,
         List<Modifier> modifiers,
         List<string> includes,
-        Dictionary<string, Entry> entries)
+        Dictionary<string, Entry> entries,
+        List<StatBlock> statBlocks)
     {
         this.resourcePath = resourcePath;
         this.text = text;
@@ -28,6 +32,7 @@ public sealed class StatDescriptionDocument
         Modifiers = modifiers;
         Includes = includes;
         this.entries = entries;
+        this.statBlocks = statBlocks;
     }
 
     public IReadOnlyList<Modifier> Modifiers { get; }
@@ -48,6 +53,7 @@ public sealed class StatDescriptionDocument
         List<string> includes = [];
         Dictionary<string, Entry> entries = new(StringComparer.Ordinal);
         Dictionary<string, int> occurrences = new(StringComparer.Ordinal);
+        List<StatBlock> statBlocks = [];
 
         for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
@@ -69,7 +75,8 @@ public sealed class StatDescriptionDocument
 
             if (line.Equals("description", StringComparison.Ordinal))
             {
-                ParseDescription(
+                int descriptionLineIndex = lineIndex;
+                string[] statIds = ParseDescription(
                     normalizedPath,
                     group,
                     text,
@@ -78,6 +85,15 @@ public sealed class StatDescriptionDocument
                     modifiers,
                     entries,
                     occurrences);
+                int nextStructureIndex = lineIndex + 1;
+                while (nextStructureIndex < lines.Count &&
+                    string.IsNullOrWhiteSpace(lines[nextStructureIndex].Content))
+                    nextStructureIndex++;
+                int blockStart = lines[descriptionLineIndex].Start;
+                int blockEnd = nextStructureIndex < lines.Count
+                    ? lines[nextStructureIndex].Start
+                    : text.Length;
+                statBlocks.Add(new StatBlock(statIds, blockStart, blockEnd - blockStart));
                 continue;
             }
 
@@ -91,13 +107,143 @@ public sealed class StatDescriptionDocument
             preamble,
             modifiers,
             includes,
-            entries);
+            entries,
+            statBlocks);
     }
 
     public Modifier? Find(string key)
     {
         ArgumentNullException.ThrowIfNull(key);
         return entries.TryGetValue(key, out Entry? entry) ? entry.Modifier : null;
+    }
+
+    public string GetSingleStatBlock(string statId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(statId);
+        StatBlock? block = FindSingleStatBlock(statId);
+        return block is null ? "" : text.Substring(block.Start, block.Length);
+    }
+
+    public string CreateSignedResistanceBlock(
+        string statId,
+        string negativeTemplate,
+        string nonnegativeTemplate,
+        string language = EnglishLanguage)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(statId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(language);
+        ValidateTemplate(negativeTemplate);
+        ValidateTemplate(nonnegativeTemplate);
+
+        string originalBlock = GetSingleStatBlock(statId);
+        if (originalBlock.Length == 0)
+            throw new InvalidDataException($"Single-stat block was not found: {statId}");
+
+        List<Line> lines = ReadLines(originalBlock);
+        if (lines.Count < 4 ||
+            !lines[0].Content.Equals("description", StringComparison.Ordinal))
+            throw new InvalidDataException($"Unsupported description block: {statId}");
+
+        string[] header = SplitFields(lines[1].Content);
+        if (header.Length != 2 ||
+            !header[0].Equals("1", StringComparison.Ordinal) ||
+            !header[1].Equals(statId, StringComparison.Ordinal))
+            throw new InvalidDataException($"Unsupported single-stat header: {statId}");
+
+        VariantBlock target = FindVariantBlock(lines, language, statId);
+        Line countLine = lines[target.CountLineIndex];
+        string[] countFields = SplitFields(countLine.Content);
+        if (countFields.Length != 1 ||
+            !countFields[0].Equals("1", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                $"Signed resistance block requires one {language} variant: {statId}");
+
+        Line variantLine = lines[target.VariantLineIndex];
+        QuotedSpan quoted = FindQuotedSpan(variantLine.Content, target.VariantLineIndex);
+        string conditionPrefix = variantLine.Content[..quoted.OpenQuote];
+        if (!NormalizeFields(conditionPrefix).Equals("#", StringComparison.Ordinal))
+            throw new InvalidDataException(
+                $"Signed resistance block requires a catch-all {language} variant: {statId}");
+
+        int conditionIndex = conditionPrefix.IndexOf('#');
+        if (conditionIndex < 0)
+            throw new InvalidDataException($"Invalid catch-all condition: {statId}");
+        string leadingWhitespace = conditionPrefix[..conditionIndex];
+        string quoteSpacing = conditionPrefix[(conditionIndex + 1)..];
+        string suffix = variantLine.Content[(quoted.CloseQuote + 1)..];
+        string lineEnding = GetLineEnding(originalBlock, lines, target.VariantLineIndex);
+        if (lineEnding.Length == 0)
+            throw new InvalidDataException(
+                $"{language} variant has no reusable line ending: {statId}");
+
+        string negativeLine =
+            $"{leadingWhitespace}#|-1{quoteSpacing}\"{negativeTemplate}\"{suffix}";
+        string nonnegativeLine =
+            $"{leadingWhitespace}0|#{quoteSpacing}\"{nonnegativeTemplate}\"{suffix}";
+        string replacementVariants = negativeLine + lineEnding + nonnegativeLine;
+
+        int countToken = countLine.Content.IndexOf('1');
+        if (countToken < 0)
+            throw new InvalidDataException($"Invalid {language} variant count: {statId}");
+        string replacementCount =
+            countLine.Content[..countToken] + "2" + countLine.Content[(countToken + 1)..];
+
+        StringBuilder output = new(originalBlock);
+        output.Remove(variantLine.Start, variantLine.Content.Length);
+        output.Insert(variantLine.Start, replacementVariants);
+        output.Remove(countLine.Start, countLine.Content.Length);
+        output.Insert(countLine.Start, replacementCount);
+        string generatedBlock = output.ToString();
+
+        byte[] preview = ReplaceSingleStatBlock(statId, originalBlock, generatedBlock);
+        StatDescriptionDocument reparsed = Parse(resourcePath, preview);
+        if (!reparsed.GetSingleStatBlock(statId).Equals(generatedBlock, StringComparison.Ordinal))
+            throw new InvalidDataException("Generated signed resistance block failed validation.");
+        return generatedBlock;
+    }
+
+    public byte[] ReplaceSingleStatBlock(
+        string statId,
+        string expectedBlock,
+        string replacementBlock)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(statId);
+        ArgumentNullException.ThrowIfNull(expectedBlock);
+        ArgumentNullException.ThrowIfNull(replacementBlock);
+
+        StatBlock? current = FindSingleStatBlock(statId);
+        string currentBlock = current is null
+            ? ""
+            : text.Substring(current.Start, current.Length);
+        if (!currentBlock.Equals(expectedBlock, StringComparison.Ordinal))
+            throw new InvalidDataException($"Single-stat block changed before replacement: {statId}");
+
+        if (current is null && replacementBlock.Length > 0 &&
+            !EndsWithLineEnding(text))
+            throw new InvalidDataException(
+                "Cannot insert a description block when the resource has no trailing line ending.");
+
+        string outputText;
+        if (current is null)
+        {
+            outputText = text + replacementBlock;
+        }
+        else
+        {
+            StringBuilder output = new(text);
+            output.Remove(current.Start, current.Length);
+            output.Insert(current.Start, replacementBlock);
+            outputText = output.ToString();
+        }
+
+        byte[] encoded = Encode(outputText);
+        ValidateSingleStatBlockReplacement(
+            statId,
+            current,
+            expectedBlock,
+            replacementBlock,
+            encoded);
+        return encoded;
     }
 
     public byte[] Replace(IReadOnlyDictionary<string, string> replacementTemplates)
@@ -157,7 +303,195 @@ public sealed class StatDescriptionDocument
         }
     }
 
-    private static void ParseDescription(
+    private StatBlock? FindSingleStatBlock(string statId)
+    {
+        StatBlock? match = null;
+        foreach (StatBlock block in statBlocks)
+        {
+            if (!block.StatIds.Contains(statId, StringComparer.Ordinal))
+                continue;
+            if (block.StatIds.Length != 1)
+                throw new InvalidDataException(
+                    $"Stat belongs to a multi-stat description block: {statId}");
+            if (match is not null)
+                throw new InvalidDataException($"Duplicate single-stat description block: {statId}");
+            match = block;
+        }
+        return match;
+    }
+
+    private void ValidateSingleStatBlockReplacement(
+        string statId,
+        StatBlock? originalBlock,
+        string expectedBlock,
+        string replacementBlock,
+        byte[] encoded)
+    {
+        StatDescriptionDocument reparsed = Parse(resourcePath, encoded);
+        if (encoding.CodePage != reparsed.encoding.CodePage ||
+            !preamble.AsSpan().SequenceEqual(reparsed.preamble))
+            throw new InvalidDataException("Block replacement changed the resource encoding or BOM.");
+
+        string actualBlock = reparsed.GetSingleStatBlock(statId);
+        if (!actualBlock.Equals(replacementBlock, StringComparison.Ordinal))
+            throw new InvalidDataException("Inserted description block did not round-trip exactly.");
+
+        List<Entry> originalOthers = entries.Values
+            .Where(entry => !IsSingleStatEntry(entry, statId))
+            .ToList();
+        List<Entry> currentOthers = reparsed.entries.Values
+            .Where(entry => !IsSingleStatEntry(entry, statId))
+            .ToList();
+        if (originalOthers.Count != currentOthers.Count)
+            throw new InvalidDataException("Block replacement changed other modifier entries.");
+
+        foreach (Entry original in originalOthers)
+        {
+            if (!reparsed.entries.TryGetValue(original.Modifier.Key, out Entry? current) ||
+                !EntriesMatch(original, current))
+                throw new InvalidDataException(
+                    $"Block replacement changed another modifier: {original.Modifier.Key}");
+        }
+
+        string restoredText;
+        if (originalBlock is null)
+        {
+            if (replacementBlock.Length == 0)
+            {
+                restoredText = reparsed.text;
+            }
+            else
+            {
+                StatBlock inserted = reparsed.FindSingleStatBlock(statId)
+                    ?? throw new InvalidDataException("Inserted description block was not indexed.");
+                restoredText = reparsed.text.Remove(inserted.Start, inserted.Length);
+            }
+        }
+        else if (replacementBlock.Length == 0)
+        {
+            restoredText = reparsed.text.Insert(originalBlock.Start, expectedBlock);
+        }
+        else
+        {
+            StatBlock replacement = reparsed.FindSingleStatBlock(statId)
+                ?? throw new InvalidDataException("Replacement description block was not indexed.");
+            restoredText = reparsed.text
+                .Remove(replacement.Start, replacement.Length)
+                .Insert(replacement.Start, expectedBlock);
+        }
+
+        if (!reparsed.Encode(restoredText).AsSpan().SequenceEqual(Encode(text)))
+            throw new InvalidDataException("Block replacement is not byte-for-byte reversible.");
+    }
+
+    private static bool IsSingleStatEntry(Entry entry, string statId) =>
+        entry.Modifier.StatIds.Length == 1 &&
+        entry.Modifier.StatIds[0].Equals(statId, StringComparison.Ordinal);
+
+    private static bool EntriesMatch(Entry original, Entry current) =>
+        original.Modifier.Key.Equals(current.Modifier.Key, StringComparison.Ordinal) &&
+        original.Modifier.ResourcePath.Equals(
+            current.Modifier.ResourcePath,
+            StringComparison.Ordinal) &&
+        original.Modifier.StatIds.SequenceEqual(
+            current.Modifier.StatIds,
+            StringComparer.Ordinal) &&
+        original.Modifier.VariantKey.Equals(
+            current.Modifier.VariantKey,
+            StringComparison.Ordinal) &&
+        original.Modifier.Conditions.Equals(
+            current.Modifier.Conditions,
+            StringComparison.Ordinal) &&
+        original.Modifier.Template.Equals(
+            current.Modifier.Template,
+            StringComparison.Ordinal) &&
+        original.Modifier.Language.Equals(
+            current.Modifier.Language,
+            StringComparison.Ordinal) &&
+        original.Modifier.Group.Equals(current.Modifier.Group, StringComparison.Ordinal);
+
+    private static VariantBlock FindVariantBlock(
+        List<Line> lines,
+        string targetLanguage,
+        string statId)
+    {
+        VariantBlock? match = null;
+        string language = EnglishLanguage;
+        int countLineIndex = 2;
+        while (countLineIndex < lines.Count)
+        {
+            Line countLine = lines[countLineIndex];
+            if (countLine.Content.Length == 0 ||
+                !char.IsWhiteSpace(countLine.Content[0]))
+                throw new InvalidDataException($"Invalid {language} variant count: {statId}");
+
+            string[] countFields = SplitFields(countLine.Content);
+            int variantCount = ParseNonNegativeCount(
+                countFields,
+                countLineIndex,
+                $"{language} variant count");
+            if (countFields.Length != 1)
+                throw new InvalidDataException($"Invalid {language} variant count: {statId}");
+
+            int variantLineIndex = countLineIndex + 1;
+            int nextLineIndex = variantLineIndex + variantCount;
+            if (nextLineIndex > lines.Count)
+                throw new InvalidDataException($"Incomplete {language} variant list: {statId}");
+
+            for (int index = variantLineIndex; index < nextLineIndex; index++)
+            {
+                Line variantLine = lines[index];
+                if (variantLine.Content.Length == 0 ||
+                    !char.IsWhiteSpace(variantLine.Content[0]))
+                    throw new InvalidDataException($"Invalid {language} variant: {statId}");
+                FindQuotedSpan(variantLine.Content, index);
+            }
+
+            if (language.Equals(targetLanguage, StringComparison.Ordinal))
+            {
+                if (match is not null)
+                    throw new InvalidDataException(
+                        $"Duplicate {targetLanguage} variant block: {statId}");
+                match = new VariantBlock(countLineIndex, variantLineIndex);
+            }
+
+            if (nextLineIndex >= lines.Count ||
+                string.IsNullOrWhiteSpace(lines[nextLineIndex].Content))
+                break;
+
+            Line languageLine = lines[nextLineIndex];
+            if (!char.IsWhiteSpace(languageLine.Content[0]))
+                throw new InvalidDataException($"Invalid language header: {statId}");
+            string languageHeader = languageLine.Content.TrimStart();
+            if (!StartsWithDirective(languageHeader, "lang"))
+                throw new InvalidDataException($"Invalid language header: {statId}");
+            language = ReadDirectiveQuotedValue(
+                languageHeader,
+                "lang",
+                nextLineIndex);
+            countLineIndex = nextLineIndex + 1;
+        }
+
+        return match ?? throw new InvalidDataException(
+            $"{targetLanguage} variant block was not found: {statId}");
+    }
+
+    private static string GetLineEnding(string value, List<Line> lines, int lineIndex)
+    {
+        Line line = lines[lineIndex];
+        int contentEnd = line.Start + line.Content.Length;
+        int nextStart = lineIndex + 1 < lines.Count
+            ? lines[lineIndex + 1].Start
+            : value.Length;
+        if (nextStart < contentEnd)
+            throw new InvalidDataException("Invalid line offsets.");
+        return value[contentEnd..nextStart];
+    }
+
+    private static bool EndsWithLineEnding(string value) =>
+        value.Length > 0 && value[^1] is '\r' or '\n';
+
+    private static string[] ParseDescription(
         string resourcePath,
         string group,
         string text,
@@ -177,32 +511,96 @@ public sealed class StatDescriptionDocument
             throw Invalid(lineIndex, "Stat count does not match the description header.");
         string[] statIds = header[1..];
 
-        Line countLine = ReadNextIndented(lines, ref lineIndex, "English variant count");
+        ParseVariants(
+            resourcePath,
+            group,
+            EnglishLanguage,
+            text,
+            lines,
+            ref lineIndex,
+            statIds,
+            modifiers,
+            entries,
+            occurrences);
+
+        while (lineIndex + 1 < lines.Count)
+        {
+            string next = lines[lineIndex + 1].Content;
+            if (string.IsNullOrWhiteSpace(next) || !char.IsWhiteSpace(next[0]))
+                break;
+
+            Line languageLine = ReadNextIndented(lines, ref lineIndex, "language header");
+            string languageHeader = languageLine.Content.TrimStart();
+            if (!StartsWithDirective(languageHeader, "lang"))
+                throw Invalid(lineIndex, "Expected a language header.");
+            string language = ReadDirectiveQuotedValue(
+                languageHeader,
+                "lang",
+                lineIndex);
+            ParseVariants(
+                resourcePath,
+                group,
+                language,
+                text,
+                lines,
+                ref lineIndex,
+                statIds,
+                modifiers,
+                entries,
+                occurrences);
+        }
+
+        return statIds;
+    }
+
+    private static void ParseVariants(
+        string resourcePath,
+        string group,
+        string language,
+        string text,
+        List<Line> lines,
+        ref int lineIndex,
+        string[] statIds,
+        List<Modifier> modifiers,
+        Dictionary<string, Entry> entries,
+        Dictionary<string, int> occurrences)
+    {
+        Line countLine = ReadNextIndented(lines, ref lineIndex, $"{language} variant count");
         string[] countFields = SplitFields(countLine.Content);
-        int variantCount = ParseNonNegativeCount(countFields, lineIndex, "English variant count");
+        int variantCount = ParseNonNegativeCount(
+            countFields,
+            lineIndex,
+            $"{language} variant count");
         if (countFields.Length != 1)
-            throw Invalid(lineIndex, "English variant count line contains unexpected fields.");
+            throw Invalid(lineIndex, $"{language} variant count line contains unexpected fields.");
 
         for (int variantIndex = 0; variantIndex < variantCount; variantIndex++)
         {
-            if (++lineIndex >= lines.Count)
-                throw Invalid(lineIndex, "English variant list ended unexpectedly.");
-
-            Line line = lines[lineIndex];
-            if (line.Content.Length == 0 || !char.IsWhiteSpace(line.Content[0]))
-                throw Invalid(lineIndex, "English variant must be indented.");
-
+            Line line = ReadNextIndented(lines, ref lineIndex, $"{language} variant");
             QuotedSpan quoted = FindQuotedSpan(line.Content, lineIndex);
+            if (language is not EnglishLanguage and not TraditionalChineseLanguage)
+                continue;
+
             string prefix = NormalizeFields(line.Content[..quoted.OpenQuote]);
             string suffix = NormalizeFields(line.Content[(quoted.CloseQuote + 1)..]);
             string occurrenceKey =
                 $"{string.Join('\u001f', statIds)}\n{prefix}\n{suffix}";
-            int occurrence = occurrences.TryGetValue(occurrenceKey, out int current) ? current + 1 : 1;
+            if (!language.Equals(EnglishLanguage, StringComparison.Ordinal))
+                occurrenceKey += $"\n{language}";
+            int occurrence = occurrences.TryGetValue(occurrenceKey, out int current)
+                ? current + 1
+                : 1;
             occurrences[occurrenceKey] = occurrence;
             string occurrenceText = occurrence.ToString(CultureInfo.InvariantCulture);
             string variantKey =
                 $"condition={prefix};suffix={suffix};occurrence={occurrenceText}";
-            string key = CreateKey(resourcePath, statIds, prefix, suffix, occurrenceText);
+            string key = CreateKey(
+                resourcePath,
+                statIds,
+                prefix,
+                suffix,
+                occurrenceText,
+                language);
             if (entries.ContainsKey(key))
                 throw Invalid(lineIndex, $"Duplicate modifier key {key}.");
 
@@ -211,6 +609,7 @@ public sealed class StatDescriptionDocument
             string template = text.Substring(templateStart, templateLength);
             Modifier modifier = new()
             {
+                Language = language,
                 Key = key,
                 ResourcePath = resourcePath,
                 StatIds = statIds,
@@ -221,36 +620,6 @@ public sealed class StatDescriptionDocument
             };
             modifiers.Add(modifier);
             entries.Add(key, new Entry(modifier, templateStart, templateLength));
-        }
-
-        while (lineIndex + 1 < lines.Count)
-        {
-            string next = lines[lineIndex + 1].Content;
-            if (string.IsNullOrWhiteSpace(next) || !char.IsWhiteSpace(next[0]))
-                break;
-
-            ParseLanguageBlock(lines, ref lineIndex);
-        }
-    }
-
-    private static void ParseLanguageBlock(List<Line> lines, ref int lineIndex)
-    {
-        Line languageLine = ReadNextIndented(lines, ref lineIndex, "language header");
-        string languageHeader = languageLine.Content.TrimStart();
-        if (!StartsWithDirective(languageHeader, "lang"))
-            throw Invalid(lineIndex, "Expected a language header.");
-        ReadDirectiveQuotedValue(languageHeader, "lang", lineIndex);
-
-        Line countLine = ReadNextIndented(lines, ref lineIndex, "language variant count");
-        string[] countFields = SplitFields(countLine.Content);
-        int variantCount = ParseNonNegativeCount(countFields, lineIndex, "language variant count");
-        if (countFields.Length != 1)
-            throw Invalid(lineIndex, "Language variant count line contains unexpected fields.");
-
-        for (int variantIndex = 0; variantIndex < variantCount; variantIndex++)
-        {
-            Line variantLine = ReadNextIndented(lines, ref lineIndex, "language variant");
-            FindQuotedSpan(variantLine.Content, lineIndex);
         }
     }
 
@@ -392,10 +761,13 @@ public sealed class StatDescriptionDocument
         string[] statIds,
         string condition,
         string suffix,
-        string occurrence)
+        string occurrence,
+        string language)
     {
         string source =
             $"{resourcePath}\n{string.Join('\u001f', statIds)}\n{condition}\n{suffix}\n{occurrence}";
+        if (!language.Equals(EnglishLanguage, StringComparison.Ordinal))
+            source += $"\n{language}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
     }
 
@@ -414,6 +786,8 @@ public sealed class StatDescriptionDocument
 
     private sealed record Entry(Modifier Modifier, int TemplateStart, int TemplateLength);
     private sealed record Replacement(int Start, int Length, string Value);
+    private sealed record StatBlock(string[] StatIds, int Start, int Length);
+    private readonly record struct VariantBlock(int CountLineIndex, int VariantLineIndex);
     private readonly record struct Line(int Start, string Content);
     private readonly record struct QuotedSpan(int OpenQuote, int CloseQuote);
 }

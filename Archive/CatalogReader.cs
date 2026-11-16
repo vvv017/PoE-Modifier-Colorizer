@@ -22,6 +22,7 @@ internal static class CatalogReader
         var choices = AltarDataReader.Read(archive, hashes);
         var notices = new List<string>();
         var items = new List<Modifier>();
+        var documents = new Dictionary<string, StatDescriptionDocument>(StringComparer.OrdinalIgnoreCase);
         while (pending.TryDequeue(out string? resourcePath))
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -34,10 +35,12 @@ internal static class CatalogReader
                 ?? throw new FileNotFoundException($"Description file is missing: {path}");
             hashes[path] = GgpkArchive.Hash(bytes);
             var document = StatDescriptionDocument.Parse(path, bytes);
+            documents.Add(path, document);
             items.AddRange(document.Modifiers);
             foreach (string include in document.Includes)
                 pending.Enqueue(include.Contains('/') || include.Contains('\\') ? include : Prefix + include);
         }
+        items = AltarResistanceScope.Project(items, documents);
         items = AltarCatalog.AttachUses(items, choices, notices)
             .Where(item => item.Group != "shared" || item.AltarUses.Count > 0 ||
                 item.StatIds.Any(id => id.StartsWith("map_", StringComparison.Ordinal)))
@@ -45,14 +48,15 @@ internal static class CatalogReader
             {
                 Group = item.StatIds.Any(id => id.StartsWith("map_", StringComparison.Ordinal)) ? "map" : "altar",
             }).ToList();
-        if (items.Count == 0) throw new InvalidDataException("No English descriptions were found.");
+        if (items.Count == 0) throw new InvalidDataException("No supported game descriptions were found.");
         notices.Add("Altar faction, target and upside/downside come from local altar choices and their Mod/Stat references. Shared text may appear in other game contexts.");
         notices.Add("The catalog can contain historical, hidden or Ruthless entries. It is not a list of currently rollable map modifiers.");
         notices.Add("Preview colors are approximate. Confirm applied colors in the game.");
+        notices.Add("The four base resistance colors apply only to negative values in the altar description file. Shared resistance colors previously written by this app are restored when applying these rules.");
         return new ModifierCatalog
         {
             ArchivePath = Path.GetFullPath(archivePath),
-            Items = items.OrderBy(item => item.Group).ThenBy(item => item.Template).ToList(),
+            Items = items.OrderBy(item => item.Language).ThenBy(item => item.Group).ThenBy(item => item.Template).ToList(),
             Colors = [.. ColorMarkup.Palette],
             ResourceHashes = hashes,
             Notices = notices,
