@@ -40,7 +40,7 @@ internal static class CatalogReader
             foreach (string include in document.Includes)
                 pending.Enqueue(include.Contains('/') || include.Contains('\\') ? include : Prefix + include);
         }
-        items = AltarResistanceScope.Project(items, documents);
+        items = AltarValueScope.Project(items, documents);
         items = AltarCatalog.AttachUses(items, choices, notices)
             .Where(item => item.Group != "shared" || item.AltarUses.Count > 0 ||
                 item.StatIds.Any(id => id.StartsWith("map_", StringComparison.Ordinal)))
@@ -52,7 +52,10 @@ internal static class CatalogReader
         notices.Add("Altar faction, target and upside/downside come from local altar choices and their Mod/Stat references. Shared text may appear in other game contexts.");
         notices.Add("The catalog can contain historical, hidden or Ruthless entries. It is not a list of currently rollable map modifiers.");
         notices.Add("Preview colors are approximate. Confirm applied colors in the game.");
-        notices.Add("The four base resistance colors apply only to negative values in the altar description file. Shared resistance colors previously written by this app are restored when applying these rules.");
+        notices.Add("Eight reviewed altar values use dedicated numeric branches. " +
+            "Player penalties and enemy Physical Damage Reduction or Armour bonuses have " +
+            "independent color rules; zero values stay plain. Shared colors previously " +
+            "written by this app are restored when applying these rules.");
         return new ModifierCatalog
         {
             ArchivePath = Path.GetFullPath(archivePath),

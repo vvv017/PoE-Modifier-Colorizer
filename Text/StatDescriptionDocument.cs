@@ -124,16 +124,19 @@ public sealed class StatDescriptionDocument
         return block is null ? "" : text.Substring(block.Start, block.Length);
     }
 
-    public string CreateSignedResistanceBlock(
+    public string CreateSignedValueBlock(
         string statId,
         string negativeTemplate,
         string nonnegativeTemplate,
-        string language = EnglishLanguage)
+        string language = EnglishLanguage,
+        string? positiveTemplate = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(statId);
         ArgumentException.ThrowIfNullOrWhiteSpace(language);
         ValidateTemplate(negativeTemplate);
         ValidateTemplate(nonnegativeTemplate);
+        if (positiveTemplate is not null)
+            ValidateTemplate(positiveTemplate);
 
         string originalBlock = GetSingleStatBlock(statId);
         if (originalBlock.Length == 0)
@@ -156,14 +159,14 @@ public sealed class StatDescriptionDocument
         if (countFields.Length != 1 ||
             !countFields[0].Equals("1", StringComparison.Ordinal))
             throw new InvalidDataException(
-                $"Signed resistance block requires one {language} variant: {statId}");
+                $"Signed value block requires one {language} variant: {statId}");
 
         Line variantLine = lines[target.VariantLineIndex];
         QuotedSpan quoted = FindQuotedSpan(variantLine.Content, target.VariantLineIndex);
         string conditionPrefix = variantLine.Content[..quoted.OpenQuote];
         if (!NormalizeFields(conditionPrefix).Equals("#", StringComparison.Ordinal))
             throw new InvalidDataException(
-                $"Signed resistance block requires a catch-all {language} variant: {statId}");
+                $"Signed value block requires a catch-all {language} variant: {statId}");
 
         int conditionIndex = conditionPrefix.IndexOf('#');
         if (conditionIndex < 0)
@@ -178,15 +181,26 @@ public sealed class StatDescriptionDocument
 
         string negativeLine =
             $"{leadingWhitespace}#|-1{quoteSpacing}\"{negativeTemplate}\"{suffix}";
+        string nonnegativeCondition = positiveTemplate is null ? "0|#" : "0";
         string nonnegativeLine =
-            $"{leadingWhitespace}0|#{quoteSpacing}\"{nonnegativeTemplate}\"{suffix}";
+            $"{leadingWhitespace}{nonnegativeCondition}{quoteSpacing}\"{nonnegativeTemplate}\"{suffix}";
         string replacementVariants = negativeLine + lineEnding + nonnegativeLine;
+        string replacementVariantCount = "2";
+        if (positiveTemplate is not null)
+        {
+            string positiveLine =
+                $"{leadingWhitespace}1|#{quoteSpacing}\"{positiveTemplate}\"{suffix}";
+            replacementVariants += lineEnding + positiveLine;
+            replacementVariantCount = "3";
+        }
 
         int countToken = countLine.Content.IndexOf('1');
         if (countToken < 0)
             throw new InvalidDataException($"Invalid {language} variant count: {statId}");
         string replacementCount =
-            countLine.Content[..countToken] + "2" + countLine.Content[(countToken + 1)..];
+            countLine.Content[..countToken] +
+            replacementVariantCount +
+            countLine.Content[(countToken + 1)..];
 
         StringBuilder output = new(originalBlock);
         output.Remove(variantLine.Start, variantLine.Content.Length);
@@ -198,7 +212,24 @@ public sealed class StatDescriptionDocument
         byte[] preview = ReplaceSingleStatBlock(statId, originalBlock, generatedBlock);
         StatDescriptionDocument reparsed = Parse(resourcePath, preview);
         if (!reparsed.GetSingleStatBlock(statId).Equals(generatedBlock, StringComparison.Ordinal))
-            throw new InvalidDataException("Generated signed resistance block failed validation.");
+            throw new InvalidDataException("Generated signed value block failed validation.");
+
+        (string Conditions, string Template)[] expectedVariants = positiveTemplate is null
+            ? [("#|-1", negativeTemplate), ("0|#", nonnegativeTemplate)]
+            : [
+                ("#|-1", negativeTemplate),
+                ("0", nonnegativeTemplate),
+                ("1|#", positiveTemplate),
+            ];
+        (string Conditions, string Template)[] actualVariants = reparsed.Modifiers
+            .Where(modifier =>
+                modifier.Language.Equals(language, StringComparison.Ordinal) &&
+                modifier.StatIds.Length == 1 &&
+                modifier.StatIds[0].Equals(statId, StringComparison.Ordinal))
+            .Select(modifier => (modifier.Conditions, modifier.Template))
+            .ToArray();
+        if (!actualVariants.SequenceEqual(expectedVariants))
+            throw new InvalidDataException("Generated signed value variants failed validation.");
         return generatedBlock;
     }
 

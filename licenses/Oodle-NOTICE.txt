@@ -1,0 +1,22 @@
+Oodle Data Compression - binary provenance and license status
+Recorded: 2026-11-17
+
+File: oo2core.dll
+Embedded version string: 2.9.10
+Embedded original name: oo2core_9_win64.dll
+Embedded copyright: Copyright (C) 1994-2023, Epic Games Tools LLC
+SHA-256: 4758C7901CBD68DF1848B7AFED48C1975AD59B509886C21B87C0E91D717446B5
+
+The binary matches the copy from the LibGGPK3 v2.7.5 Windows x64 tool archive:
+https://github.com/aianlinb/LibGGPK3/releases/tag/v2.7.5
+
+That archive contained no Oodle license or redistribution grant. This binary is
+not covered by the AGPL license for this application or LibGGPK3. Permission to
+redistribute it with this application has not been established, including its
+compatibility with the AGPL components. This provenance notice grants no rights
+to Oodle and does not replace applicable Epic/RAD license terms.
+
+Official licensing information:
+https://www.radgametools.com/sales.htm
+https://www.unrealengine.com/eula/unreal
+Licensing contact: sales3@radgametools.com

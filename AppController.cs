@@ -26,7 +26,7 @@ public sealed class AppController
             Settings.ArchivePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
                 "Grinding Gear Games", "Path of Exile", "Content.ggpk");
         SynchronizeUndoRules();
-        MigrateResistanceRules(Catalog);
+        MigrateScopedRules(Catalog);
         ImportTraditionalChineseRules(Catalog);
     }
 
@@ -60,7 +60,7 @@ public sealed class AppController
             SynchronizeUndoRules();
             storage.Save("catalog.json", catalog);
             Catalog = catalog;
-            MigrateResistanceRules(catalog);
+            MigrateScopedRules(catalog);
             ImportTraditionalChineseRules(catalog);
             Settings.ArchivePath = path;
             SaveSettings();
@@ -93,8 +93,8 @@ public sealed class AppController
         var edits = snapshot.Items.Where(item => selected.Contains(item.Key) && Settings.Rules.ContainsKey(item.Key))
             .Select(item => new PatchWriter.Edit(item, item.Template,
                 ColorMarkup.Apply(item.Template, Settings.Rules[item.Key]), AllowOurColor: true)).ToList();
-        if (edits.Any(edit => AltarResistanceScope.IsShared(edit.Modifier)))
-            throw new InvalidOperationException("Refresh the local catalog to use altar-only resistance colors.");
+        if (edits.Any(edit => AltarValueScope.IsShared(edit.Modifier)))
+            throw new InvalidOperationException("Refresh the local catalog to use separate altar value colors.");
         if (edits.Count == 0) return new OperationResult(0, 0, ["No color rules were selected."]);
         await archiveGate.WaitAsync(cancellationToken);
         try
@@ -145,7 +145,8 @@ public sealed class AppController
                     AllowOurColor: false, UndoOf: change.Id,
                     ExpectedBlock: change.AfterBlock, ReplacementBlock: change.BeforeBlock,
                     RuleChanges: change.RuleChanges.Select(rule =>
-                        new RuleChange(rule.Key, rule.After, rule.Before)).ToList()));
+                        new RuleChange(rule.Key, rule.After, rule.Before,
+                            rule.Language, rule.Conditions)).ToList()));
             }
             OperationResult result = edits.Count == 0 ? new OperationResult(0, targets.Count, [])
                 : await Task.Run(() => writer.Apply(path, codec, edits, progress, cancellationToken));
@@ -156,11 +157,11 @@ public sealed class AppController
         finally { archiveGate.Release(); }
     }
 
-    private void MigrateResistanceRules(ModifierCatalog? catalog)
+    private void MigrateScopedRules(ModifierCatalog? catalog)
     {
         if (catalog is null) return;
         bool changed = false;
-        foreach (Modifier item in catalog.Items.Where(AltarResistanceScope.IsScoped))
+        foreach (Modifier item in catalog.Items.Where(AltarValueScope.IsScoped))
         {
             if (item.LegacySharedKey is not null &&
                 Settings.Rules.TryGetValue(item.LegacySharedKey, out string? color))

@@ -86,4 +86,9 @@ public sealed class ChangeRecord
 
 public sealed record OperationResult(int Applied, int Skipped, List<string> Notices);
 
-public sealed record RuleChange(string Key, string Before, string After);
+public sealed record RuleChange(
+    string Key,
+    string Before,
+    string After,
+    string Language = "",
+    string Conditions = "");

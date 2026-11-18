@@ -1,100 +1,136 @@
-# Traditional Chinese game text handoff
+# v0.1.2 release handoff
 
-Snapshot: 2026-11-15, America/Los_Angeles. Application version: 0.1.1.
-Base commit: `a01d7e960aa1c99298158fe528498bc2adda4ca6` on `main`.
-Source publication target: `main` at
-https://github.com/vvv017/PoE-Modifier-Colorizer, as requested by the user.
-No hosted deployment or CI run was performed for this update.
+Pre-publication snapshot: 2026-11-17, America/Los_Angeles.
+Application version and intended release tag: `0.1.2` / `v0.1.2`.
+Base commit: `0b6450c865c81f48ca01c90bf84852fa6f7cd4c5` on `main`.
+The publication check fetched `origin` and found no divergence from that base;
+GitHub had no existing releases. This snapshot records local evidence before
+publication; the release tag identifies the final published source commit.
+No repository CI workflow or observed CI run is claimed.
 
-## Delivered behavior
+## Behavior
 
-The editor reads English and the exact `Traditional Chinese` language blocks
-from the game's own CSD resources. Game text and interface language are separate
-selectors. Both languages can be searched and colored independently. Apply all
-covers configured entries in both languages, regardless of the current filter.
-English keys remain unchanged; Traditional Chinese keys include a language
-namespace. Existing JSON without a language field continues to mean English.
+Physical damage reduction and flat armour now have separate altar entries for
+decreases and increases. Coloring a player penalty no longer colors the monster
+or boss bonus through the same shared description. Negative values use `#|-1`,
+zero uses a plain `0` branch, and positive values use an independently configured
+`1|#` branch. The UI labels the direction and retains the actual altar targets.
 
-On the first bilingual import, saved colors are copied only where resource path,
-ordered Stat IDs and numeric conditions identify exactly one entry in each
-language. An early legacy key can be used only when its own applied journal
-record identifies one current English entry by exact live text. Original rules
-are retained. The one-time completion flag prevents later imports from restoring
-Chinese colors the user deliberately changed or cleared.
+Eight explicitly reviewed stat families use altar-local descriptions: four base
+resistances, physical damage reduction, flat armour, flat evasion and critical
+multiplier per power charge. The latter two and the four resistances expose
+negative values only, preserving plain nonnegative values. Equipment/shared
+descriptions are not the editable targets for these rules.
 
-Four base resistance rules in each language target only the altar file's negative
-branch (`#|-1`). Nonnegative values (`0|#`) retain the original text. The existing
-English-only altar blocks are accepted and upgraded on apply. One language's
-color does not overwrite the other. Shared equipment resistance descriptions
-are excluded as editable targets. Other shared modifiers retain their existing
-cross-context behavior.
+This is not a universal negative-number filter. All 233 local altar choices and
+the 29 English entries with player-downside uses were inspected. The four new
+families were the remaining numeric catch-all player penalties. Increased flask
+charges used, incoming damage and harmful chances retain their positive numeric
+conditions. Existing reduced-effect variants retain their negative conditions
+and value-formatting handlers. Nonnumeric boolean effects remain unchanged.
+The semantic list needs review if a game update adds new mixed-sign altar stats.
 
-Simultaneous English and Chinese edits of the same altar resistance become one
-whole-block journal entry with both rule states. Undo ordering uses the physical
-block, preventing an older English undo from overwriting a newer Chinese edit.
-The journal preserves legacy records and exact before/after blocks. Undoing a
-Chinese upgrade restores the previous English-only block. Ordinary text changes
-remain language-specific. Pending writes reconcile against their recorded text
-or complete block before changing statuses or saved rules.
+English and Traditional Chinese remain independent. Existing resistance keys
+and legacy English-only resistance blocks remain compatible. The one-time
+Chinese rule inheritance behavior is unchanged.
 
-PoEDB comparison continues to check English pages only. Chinese entries are
-explicitly unchecked; English results are not presented as Chinese verification.
+## Migration and undo
+
+Catalog refresh moves an old broad rule to its negative altar key only. Positive
+keys never inherit that saved color. Undo reconciliation still precedes rule
+migration, and the catalog is saved before migrated settings.
+
+Applying a scoped rule restores an old shared color only when its exact applied
+journal history proves ownership. If a language has no existing local negative
+branch, that actually applied shared color is carried into the new negative
+branch and included in the same block journal. This also preserves the negative
+color when the first selected edit is a positive or other-language row. An
+existing local branch wins, and a selected negative color overrides the carry.
+Cleared settings are not repopulated merely because a color is still applied.
+
+Changes to one stat share a complete physical block and must be undone newest
+first across signs and languages. Rule records include optional language and
+condition metadata; old JSON records remain readable. Undoing the first local
+block removes that block and aligns its recorded rules; it does not recolor the
+restored shared description. This is the existing initial-scope undo behavior.
+
+Production preparation reparses generated blocks and checks unique rule keys,
+language, numeric conditions and resulting text. Existing exact block matching,
+encoding/format preservation and byte-reversibility guards remain in place.
 
 ## Observed verification
 
-- Application Release compiler baseline and final build: 0 warnings, 0 errors.
-- Catalog: 2,345 English entries and 2,314 Traditional Chinese entries. All 2,345
-  prior English keys remain. Each language resolves 232 of 233 local altar
-  choices; the pre-existing Grasping Vines gap remains.
-- Current settings: all 10 existing saved colors are retained and 10 independently
-  editable Traditional Chinese colors were added, for 20 rules total.
-- All 18 pre-existing history records remain. `changes.json`, its backup, and
-  `comparison.json` are byte-identical to their update-time snapshots. Archive
-  path, codec preference and interface language remain unchanged.
-- Actual edit preparation was exercised against the live game's three resources
-  without writing them. Proposed Chinese changes preserve every English entry,
-  all other language sections and the four complete shared resistance blocks.
-  Both languages' altar nonnegative resistance templates remain plain.
-- Reversing the prepared edits reconstructs all three complete resources exactly.
-  Preparing different English and Chinese colors for one resistance produces one
-  block with two independently recorded rules and the intended separate colors.
-- A local JSON recovery check confirmed a recovered legacy undo is synchronized
-  before migration and cannot resurrect a scoped color. The catalog is made
-  durable before the one-time Traditional Chinese settings marker is saved.
-- Source review and `git diff --check` passed. The scratch runner built using the
-  existing dependency cache; it retains a NU1900 vulnerability-feed TLS warning.
-  The application build itself has no warnings.
+- Project-local .NET 8 Release compiler baseline, final build, and publication
+  build: 0 warnings, 0 errors. Framework-dependent publish completed for
+  Windows x64. A self-contained Windows x64 single-file publish also completed;
+  its .NET runtime is included and Oodle remains a separate DLL beside the EXE.
+- Read-only import using the new assembly succeeded against the current GGPK:
+  2,347 English entries and 2,316 Traditional Chinese entries. Both languages
+  still resolve 232 of 233 choices; the existing Grasping Vines gap is unchanged.
+- All 22 saved colors are retained. One English broad physical-reduction red
+  rule moved to the negative altar key. The four positive physical-reduction /
+  armour rows across both languages have no saved colors.
+- The program/catalog update preserved all 30 prior history records. The user
+  subsequently authorized one real apply operation, which added two records and
+  marked the original broad physical-reduction change undone. There are now 32
+  records and no prepared, unknown or conflict entries.
+- The four current altar DAT resources match the earlier inspected resources by
+  SHA-256. The three current CSD resources were also extracted read-only.
+- The installed assembly matches the published assembly and reports 0.1.2.
+- With the game, launcher and editor closed, one call to the installed
+  `AppController.ApplyAsync` applied the 22 configured rules. It reported two
+  applied changes, 17 unchanged skips after block grouping, and no notices.
+  The actual writes restored the shared English physical-reduction text and
+  inserted the dedicated altar block.
+- An independent readback of the three resources matched all 22 saved colors.
+  English physical reduction is red only for `#|-1`; `0` and `1|#` are plain.
+  Traditional Chinese physical reduction remains uncolored as configured, and
+  both shared physical-reduction descriptions are plain.
+- Readback resource hashes match the journal. Reversing the two recorded edits
+  in memory reconstructs the exact pre-apply resources, proving no unrecorded
+  resource bytes changed. No actual undo was performed. Settings are byte-identical
+  to the pre-apply snapshot; archive path, codec preference and languages remain
+  unchanged.
+- Combined source review and whitespace checks passed. The locked dependency
+  file is unchanged; no production dependency was added.
 
-Evidence is local under `work/checks/traditional-chinese/`: `baseline.txt`,
-`final-build.txt`, `installed-prepare.txt`, `installed-preflight/preflight.json`,
-`final-prepare.txt`, `preservation.json`, and archive metadata snapshots. Prepared resource bytes and
-local JSON recovery copies remain outside the source distribution.
+Local evidence is under `work/checks/signed-values/`: `baseline.txt`,
+`final-build.txt`, `publish.txt`, `installed-import.txt`,
+`preview-preservation.json`, `installed-preservation.json`, and archive metadata
+snapshots. Pre-update program files and the complete local data folder are also
+retained there. The effect-by-effect audit and plan are in the workspace outputs.
+The authorized apply evidence is in `apply-2026-11-17-01/`, including
+`selection.json`, `apply-result.json`, `new-records.json`,
+`readback-verification.json`, and before/after resources. Game resources and
+private JSON are excluded from the source distribution.
 
-## Not applied and acceptance boundaries
+## Acceptance boundaries and next action
 
-The user chose to apply later. This update performs no GGPK writes. The game
-remained running while the editor was closed for an in-place program and local
-catalog/settings update. GGPK size and last-write time were unchanged. The user
-stopped desktop automation with Escape, so no further window interaction or
-new-version visual acceptance is claimed.
+The program and local catalog/settings are updated in place, and the configured
+rules have now been applied once to the GGPK. The game can be reopened for visual
+verification; another apply is not needed for this batch.
 
-After closing Path of Exile and its launcher, open the updated editor and use
-Apply selected for specific Chinese rows, or Apply all configured in both
-languages. The new language selector defaults to Traditional Chinese. Importing
-or choosing colors does not write game resources.
+No test suite, UI automation or browser automation was run. Real GGPK undo,
+interrupted-write recovery and in-game rendering remain NOT RUN. The successful
+write and exact readback do not prove game-engine override precedence or visual
+acceptance. Per-change journals are not a complete GGPK backup.
 
-In-game Chinese rendering, actual GGPK apply/undo, interrupted-write recovery,
-and full UI interaction are NOT RUN for this update. No test suite or browser
-automation was run. Prepared byte equality is not proof of game-engine override
-precedence or every possible interruption recovery. Per-change journals are not
-a full GGPK backup; an interrupted archive write may require official repair.
+## Release artifacts
 
-## Distribution
+`PoE-Modifier-Colorizer-0.1.2-win-x64-complete.zip` is a clean distribution
+containing the self-contained EXE, the existing `oo2core.dll`, matching source,
+quick-start instructions and third-party notices. It excludes local settings,
+catalogs, comparison results, undo history and game resources. The ZIP entries
+and EXE/DLL/source hashes were checked after creation. The separate EXE asset
+still needs `oo2core.dll` beside it. The combined package has not been launched
+or verified in-game; it is prepared as a prerelease.
 
-The installed executable and local ZIP are updated in place. Preserve the whole
-`data` folder when moving the installed copy; the local executable ZIP contains
-that user's settings and history and is not a public source package.
-The source folder and source ZIP contain code, docs and licenses only. They
-exclude GGPK resources, native codec/dependency binaries, user JSON and diagnostic
-captures. Build commands and locked dependency versions remain in README.md and
-packages.lock.json. No new dependency was added.
+The Oodle binary contains version string `2.9.10` and matches the DLL from the
+LibGGPK3 v2.7.5 Windows x64 tool archive. Oodle is not covered by this project's
+AGPL license. Its redistribution permission and compatibility with the AGPL
+components remain unconfirmed. `licenses/Oodle-NOTICE.txt` records its origin
+and status.
+
+The older unversioned `PoE-Modifier-Colorizer.zip` is the local installation
+archive and contains user data; it is not the release asset. Preserve the whole
+generated `data` directory when moving an existing installation.

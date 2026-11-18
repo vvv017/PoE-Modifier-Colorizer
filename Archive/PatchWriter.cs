@@ -25,9 +25,9 @@ internal sealed class PatchWriter(ChangeJournal journal)
             using var archive = new GgpkArchive(ownerPath, codecPath, writable: true);
             cancellationToken.ThrowIfCancellationRequested();
             bool strictScopedBatch = edits.Any(edit =>
-                AltarResistanceScope.IsScoped(edit.Modifier));
+                AltarValueScope.IsScoped(edit.Modifier));
             IReadOnlyList<Edit> preparedEdits =
-                AltarResistanceScope.PrepareEdits(
+                AltarValueScope.PrepareEdits(
                     archive,
                     ownerPath,
                     edits,

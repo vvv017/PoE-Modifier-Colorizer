@@ -234,6 +234,7 @@ public sealed class MainForm : Form
     {
         _modifierGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "group", Width = 115 });
         _modifierGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "text", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
+        _modifierGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "valueDirection", Width = 120 });
         _modifierGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "altar", Width = 315 });
         _modifierGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "color", Width = 110 });
         _modifierGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "comparison", Width = 110 });
@@ -324,6 +325,7 @@ public sealed class MainForm : Form
         _undoBatch.Text = _text["undoBatch"];
         SetColumnText(_modifierGrid, "group", "column.group");
         SetColumnText(_modifierGrid, "text", "column.text");
+        SetColumnText(_modifierGrid, "valueDirection", "column.valueDirection");
         SetColumnText(_modifierGrid, "altar", "column.altar");
         SetColumnText(_modifierGrid, "color", "column.color");
         SetColumnText(_modifierGrid, "comparison", "column.comparison");
@@ -505,8 +507,10 @@ public sealed class MainForm : Form
                     !MatchesAltarFilters(modifier, group, faction, target, side))
                     continue;
                 string display = Display(modifier.Template);
+                string valueDirection = DisplayValueDirection(modifier);
                 string altarContext = DisplayAltarUses(modifier);
                 if (query.Length > 0 && !display.Contains(query, StringComparison.OrdinalIgnoreCase) &&
+                    !valueDirection.Contains(query, StringComparison.OrdinalIgnoreCase) &&
                     !modifier.StatIds.Any(id => id.Contains(query, StringComparison.OrdinalIgnoreCase)) &&
                     !altarContext.Contains(query, StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -516,6 +520,7 @@ public sealed class MainForm : Form
                 int index = _modifierGrid.Rows.Add(
                     DisplayGroup(modifier),
                     display,
+                    valueDirection,
                     altarContext,
                     colorName ?? "",
                     comparison is null ? _text.Status("unchecked") : _text.Status(comparison.Status));
@@ -644,12 +649,8 @@ public sealed class MainForm : Form
                 _text.Status(change.Status),
                 DisplayHistoryLanguage(change),
                 Display(change.Modifier.Template),
-                change.RuleChanges.Count > 1
-                    ? string.Join(" / ", change.RuleChanges.Select(rule => Display(rule.Before)))
-                    : Display(change.Before),
-                change.RuleChanges.Count > 1
-                    ? string.Join(" / ", change.RuleChanges.Select(rule => Display(rule.After)))
-                    : Display(change.After),
+                DisplayHistoryValues(change, before: true),
+                DisplayHistoryValues(change, before: false),
                 change.Detail);
             _historyGrid.Rows[index].Tag = change;
         }
@@ -685,11 +686,18 @@ public sealed class MainForm : Form
                 $"{_text["preview.variant"]}: {modifier.VariantKey}",
                 $"{_text["preview.comparison"]}: {_text.Status(comparison?.Status ?? "unchecked")}",
             ];
-            if (AltarResistanceScope.IsScoped(modifier))
-                previewLines.Add(_text["preview.altarResistanceScope"]);
+            string valueDirection = DisplayValueDirection(modifier);
+            if (valueDirection.Length > 0)
+            {
+                previewLines.Insert(3, $"{_text["preview.valueDirection"]}: {valueDirection}");
+                previewLines.Add(_text[modifier.Conditions == "#|-1"
+                    ? "preview.altarValueScope.decrease"
+                    : "preview.altarValueScope.increase"]);
+            }
             if (modifier.AltarUses.Count > 0)
             {
                 previewLines.Add("");
+                previewLines.Add(_text["preview.altarEffectMeaning"]);
                 previewLines.Add(_text["preview.altarUses"] + ":");
                 previewLines.AddRange(modifier.AltarUses
                     .Select(use => $"• {DisplayAltarUse(use)} — {_text["altar.modId"]}: {use.ModId}")
@@ -714,15 +722,81 @@ public sealed class MainForm : Form
             _ => 0,
         }).FirstOrDefault();
 
-    private string DisplayHistoryLanguage(ChangeRecord change) =>
-        change.RuleChanges.Count > 1
-            ? _text["gameLanguage.both"]
-            : DisplayGameLanguage(change.Modifier.Language);
+    private string DisplayHistoryLanguage(ChangeRecord change)
+    {
+        if (change.RuleChanges.Count == 0)
+            return DisplayGameLanguage(change.Modifier.Language);
 
-    private string DisplayGameLanguage(string language) => language switch
+        string?[] languages = change.RuleChanges
+            .Select(RuleLanguage)
+            .ToArray();
+        if (languages.Any(string.IsNullOrWhiteSpace))
+        {
+            return change.RuleChanges.Count == 1
+                ? DisplayGameLanguage(change.Modifier.Language)
+                : _text["gameLanguage.unknown"];
+        }
+
+        return string.Join(
+            " + ",
+            languages
+                .Select(DisplayGameLanguage)
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private string DisplayHistoryValues(ChangeRecord change, bool before)
+    {
+        if (change.RuleChanges.Count == 0)
+            return Display(before ? change.Before : change.After);
+
+        return string.Join(" / ", change.RuleChanges.Select(rule =>
+        {
+            string label = DisplayRuleScope(rule);
+            string value = Display(before ? rule.Before : rule.After);
+            return label.Length == 0 ? value : $"{label}: {value}";
+        }));
+    }
+
+    private string DisplayRuleScope(RuleChange rule)
+    {
+        Modifier? modifier = FindCatalogModifier(rule.Key);
+        string language = !string.IsNullOrWhiteSpace(rule.Language)
+            ? DisplayGameLanguage(rule.Language)
+            : modifier is null ? "" : DisplayGameLanguage(modifier.Language);
+        string conditions = !string.IsNullOrWhiteSpace(rule.Conditions)
+            ? rule.Conditions
+            : modifier?.Conditions ?? "";
+        return string.Join(
+            " · ",
+            new[] { language, DisplayValueDirection(conditions) }
+                .Where(value => value.Length > 0));
+    }
+
+    private string? RuleLanguage(RuleChange rule) =>
+        !string.IsNullOrWhiteSpace(rule.Language)
+            ? rule.Language
+            : FindCatalogModifier(rule.Key)?.Language;
+
+    private Modifier? FindCatalogModifier(string key) =>
+        _controller.Catalog?.Items.FirstOrDefault(item => item.Key == key);
+
+    private string DisplayValueDirection(Modifier modifier) =>
+        AltarValueScope.IsScoped(modifier)
+            ? DisplayValueDirection(modifier.Conditions)
+            : "";
+
+    private string DisplayValueDirection(string conditions) => conditions switch
+    {
+        "#|-1" => _text["valueDirection.decrease"],
+        "1|#" => _text["valueDirection.increase"],
+        _ => "",
+    };
+
+    private string DisplayGameLanguage(string? language) => language switch
     {
         "Traditional Chinese" => _text["gameLanguage.traditionalChinese"],
         "English" => _text["gameLanguage.english"],
+        null or "" => _text["gameLanguage.unknown"],
         _ => language,
     };
 
