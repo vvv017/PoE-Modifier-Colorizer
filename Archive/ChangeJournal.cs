@@ -19,6 +19,9 @@ internal sealed class ChangeJournal
         var restoredIds = undo.AlsoUndoes.ToHashSet(StringComparer.Ordinal);
         if (undo.UndoOf is not null) restoredIds.Add(undo.UndoOf);
         foreach (ChangeRecord original in Entries.Where(item => restoredIds.Contains(item.Id)))
-            original.Status = "undone";
+        {
+            // A linked undo can confirm that a failed companion never changed the file.
+            if (original.Status == "applied") original.Status = "undone";
+        }
     }
 }

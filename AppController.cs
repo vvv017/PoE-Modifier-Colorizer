@@ -25,7 +25,7 @@ public sealed class AppController
         if (string.IsNullOrWhiteSpace(Settings.ArchivePath))
             Settings.ArchivePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
                 "Grinding Gear Games", "Path of Exile", "Content.ggpk");
-        SynchronizeUndoRules();
+        SynchronizeCompletedRules();
         MigrateScopedRules(Catalog);
         ImportTraditionalChineseRules(Catalog);
     }
@@ -57,7 +57,7 @@ public sealed class AppController
                 new PatchWriter(journal).ReconcilePending(path, codec, result.Notices);
                 return result;
             }, cancellationToken);
-            SynchronizeUndoRules();
+            SynchronizeCompletedRules();
             storage.Save("catalog.json", catalog);
             Catalog = catalog;
             MigrateScopedRules(catalog);
@@ -102,13 +102,13 @@ public sealed class AppController
             var writer = new PatchWriter(journal);
             var notices = new List<string>();
             await Task.Run(() => writer.ReconcilePending(path, codec, notices), cancellationToken);
-            SynchronizeUndoRules();
-            // A recovered undo can clear a pending color rule before this write.
+            SynchronizeCompletedRules();
+            // A recovered clear or undo can change a pending rule before this write.
             edits.RemoveAll(edit => !Settings.Rules.TryGetValue(edit.Modifier.Key, out string? color) ||
                 edit.Replacement != ColorMarkup.Apply(edit.Modifier.Template, color));
             if (edits.Count == 0) return new OperationResult(0, keys.Count, notices);
             OperationResult result = await Task.Run(() => writer.Apply(path, codec, edits, progress, cancellationToken));
-            SynchronizeUndoRules();
+            SynchronizeCompletedRules();
             result.Notices.AddRange(notices);
             return result;
         }
@@ -127,30 +127,89 @@ public sealed class AppController
             var notices = new List<string>();
             var writer = new PatchWriter(journal);
             await Task.Run(() => writer.ReconcilePending(path, codec, notices), cancellationToken);
-            SynchronizeUndoRules();
-            var applied = journal.Entries.Where(change => change.Status == "applied" && change.UndoOf is null &&
+            SynchronizeCompletedRules();
+            var originals = journal.Entries.Where(change => change.UndoOf is null &&
                 PatchWriter.SamePath(change.ArchivePath, path)).ToList();
+            var applied = originals.Where(change => change.Status == "applied").ToList();
             var latest = applied.GroupBy(UndoTarget)
-                .ToDictionary(group => group.Key, group => group.Last().Id);
+                .ToDictionary(group => group.Key, group => group.Last());
             var targets = applied.Where(change => selectedIds.Contains(change.Id)).ToList();
+            var clearGroups = targets.Where(change => change.ClearGroup is not null)
+                .Select(change => change.ClearGroup!).ToHashSet(StringComparer.Ordinal);
+            targets.AddRange(originals.Where(change => change.ClearGroup is not null &&
+                clearGroups.Contains(change.ClearGroup) && !targets.Contains(change)).ToList());
             var edits = new List<PatchWriter.Edit>();
-            foreach (var change in targets)
+            foreach (var group in targets.GroupBy(change => change.ClearGroup ?? change.Id))
             {
-                if (latest[UndoTarget(change)] != change.Id)
+                if (group.Any(change => change.Status is not ("applied" or "not-applied" or "undone")))
                 {
-                    notices.Add("Undo the most recent change to this modifier first: " + change.Modifier.Template);
+                    notices.Add("This linked clear has unresolved changes; refresh the catalog " +
+                        "and resolve its history before undoing: " + group.First().Modifier.Template);
                     continue;
                 }
-                edits.Add(new PatchWriter.Edit(change.Modifier, change.After, change.Before,
-                    AllowOurColor: false, UndoOf: change.Id,
-                    ExpectedBlock: change.AfterBlock, ReplacementBlock: change.BeforeBlock,
-                    RuleChanges: change.RuleChanges.Select(rule =>
-                        new RuleChange(rule.Key, rule.After, rule.Before,
-                            rule.Language, rule.Conditions)).ToList()));
+                bool hasNewerChange = group.Any(change =>
+                    latest.TryGetValue(UndoTarget(change), out ChangeRecord? newest) &&
+                    journal.Entries.IndexOf(newest) > journal.Entries.IndexOf(change));
+                if (hasNewerChange)
+                {
+                    notices.Add("Undo the most recent change to this modifier first: " +
+                        group.First().Modifier.Template);
+                    continue;
+                }
+                foreach (ChangeRecord change in group)
+                {
+                    edits.Add(new PatchWriter.Edit(change.Modifier, change.After, change.Before,
+                        AllowOurColor: false, UndoOf: change.Id,
+                        ExpectedBlock: change.AfterBlock, ReplacementBlock: change.BeforeBlock,
+                        RuleChanges: change.RuleChanges.Select(rule =>
+                            new RuleChange(rule.Key, rule.After, rule.Before,
+                                rule.Language, rule.Conditions)).ToList(),
+                        ClearGroup: change.ClearGroup));
+                }
             }
-            OperationResult result = edits.Count == 0 ? new OperationResult(0, targets.Count, [])
+            OperationResult result = edits.Count == 0 ? new OperationResult(0, 0, [])
                 : await Task.Run(() => writer.Apply(path, codec, edits, progress, cancellationToken));
-            SynchronizeUndoRules();
+            SynchronizeCompletedRules();
+            result.Notices.AddRange(notices);
+            return result with { Skipped = result.Skipped + targets.Count - edits.Count };
+        }
+        finally { archiveGate.Release(); }
+    }
+
+    public async Task<OperationResult> ClearColorsAsync(
+        IReadOnlyCollection<string> keys,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        ModifierCatalog snapshot = Catalog ??
+            throw new InvalidOperationException("Import the local catalog first.");
+        string path = Path.GetFullPath(Settings.ArchivePath);
+        string codec = Settings.CodecPath;
+        if (!PatchWriter.SamePath(snapshot.ArchivePath, path))
+            throw new InvalidOperationException(
+                "Update the local catalog for the selected GGPK before clearing colors.");
+        var selected = keys.ToHashSet(StringComparer.Ordinal);
+        var edits = snapshot.Items.Where(item => selected.Contains(item.Key))
+            .Select(item => new PatchWriter.Edit(
+                item,
+                item.Template,
+                ColorMarkup.Unwrap(item.Template),
+                AllowOurColor: false,
+                ClearsColor: true))
+            .ToList();
+        if (edits.Count == 0)
+            return new OperationResult(0, 0, ["No modifiers were selected."]);
+        await archiveGate.WaitAsync(cancellationToken);
+        try
+        {
+            var writer = new PatchWriter(journal);
+            var notices = new List<string>();
+            await Task.Run(() => writer.ReconcilePending(path, codec, notices),
+                cancellationToken);
+            SynchronizeCompletedRules();
+            OperationResult result = await Task.Run(
+                () => writer.Apply(path, codec, edits, progress, cancellationToken));
+            SynchronizeCompletedRules();
             result.Notices.AddRange(notices);
             return result;
         }
@@ -222,23 +281,38 @@ public sealed class AppController
     private static string LanguagePairIdentity(Modifier item) =>
         item.ResourcePath + "\n" + string.Join('\n', item.StatIds) + "\n" + item.Conditions;
 
-    private void SynchronizeUndoRules()
+    private void SynchronizeCompletedRules()
     {
-        var pending = journal.Entries.Where(change => change.UndoOf is not null &&
-            change.Status == "applied" && !change.RulesSynchronized).ToList();
+        var pending = journal.Entries.Where(change =>
+            (change.UndoOf is not null || change.ClearsColor) &&
+            change.Status == "applied" && !change.RulesSynchronized &&
+            IsClearGroupComplete(change)).ToList();
         if (pending.Count == 0) return;
-        foreach (ChangeRecord undo in pending)
+        foreach (ChangeRecord change in pending)
         {
-            if (undo.RuleChanges.Count == 0)
-                SetRuleFromTemplate(undo.Modifier.Key, undo.After);
+            if (change.RuleChanges.Count == 0)
+                SetRuleFromTemplate(change.Modifier.Key, change.After);
             else
-                foreach (RuleChange rule in undo.RuleChanges)
+                foreach (RuleChange rule in change.RuleChanges)
+                {
+                    // A clear may migrate an unselected shared color into its altar branch.
+                    if (change.ClearsColor &&
+                        rule.After != ColorMarkup.Unwrap(rule.After))
+                        continue;
                     SetRuleFromTemplate(rule.Key, rule.After);
+                }
         }
+        if (pending.Any(change => change.UndoOf is not null && change.ClearGroup is not null))
+            MigrateScopedRules(Catalog);
         SaveSettings();
-        foreach (ChangeRecord undo in pending) undo.RulesSynchronized = true;
+        foreach (ChangeRecord change in pending) change.RulesSynchronized = true;
         journal.Save();
     }
+
+    private bool IsClearGroupComplete(ChangeRecord change) =>
+        change.ClearGroup is null || journal.Entries.Where(item =>
+            item.BatchId == change.BatchId && item.ClearGroup == change.ClearGroup)
+            .All(item => item.Status == "applied");
 
     private void SetRuleFromTemplate(string key, string template)
     {

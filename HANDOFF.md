@@ -1,136 +1,124 @@
-# v0.1.2 release handoff
+# v0.1.3 clear-color fix handoff
 
-Pre-publication snapshot: 2026-11-17, America/Los_Angeles.
-Application version and intended release tag: `0.1.2` / `v0.1.2`.
-Base commit: `0b6450c865c81f48ca01c90bf84852fa6f7cd4c5` on `main`.
-The publication check fetched `origin` and found no divergence from that base;
-GitHub had no existing releases. This snapshot records local evidence before
-publication; the release tag identifies the final published source commit.
-No repository CI workflow or observed CI run is claimed.
+Snapshot: 2026-11-24, America/Los_Angeles.
+Release preparation base: `270838a60a2698e6824d72751115799585db745c` on `main`.
+Assembly version and intended release tag: `0.1.3` / `v0.1.3`.
+The pre-publication fetch found no divergence from that base. The release tag
+identifies the final published commit; local publication verification is recorded
+under `work/checks/release-v0.1.3-20261124/`. No repository CI run is claimed.
 
 ## Behavior
 
-Physical damage reduction and flat armour now have separate altar entries for
-decreases and increases. Coloring a player penalty no longer colors the monster
-or boss bonus through the same shared description. Negative values use `#|-1`,
-zero uses a plain `0` branch, and positive values use an independently configured
-`1|#` branch. The UI labels the direction and retains the actual altar targets.
+"Clear and restore" / "清除並還原" operates on selected modifiers in the GGPK,
+including entries whose saved rules were removed by the old button. The game
+and launcher must be closed. Setting a color still saves a local rule until
+Apply is selected.
 
-Eight explicitly reviewed stat families use altar-local descriptions: four base
-resistances, physical damage reduction, flat armour, flat evasion and critical
-multiplier per power charge. The latter two and the four resistances expose
-negative values only, preserving plain nonnegative values. Equipment/shared
-descriptions are not the editable targets for these rules.
+Clear checks the current description against the catalog and follows matching
+successful journal history back to plain text. It handles repeated recoloring
+and recorded undos. Unsupported colors, missing ownership history and changed
+text are left intact. Ordinary missing resources/modifiers are reported as
+skipped; scoped altar batches retain strict preparation checks. Settings are
+cleared only for verified completion.
 
-This is not a universal negative-number filter. All 233 local altar choices and
-the 29 English entries with player-downside uses were inspected. The four new
-families were the remaining numeric catch-all player penalties. Increased flask
-charges used, incoming damage and harmful chances retain their positive numeric
-conditions. Existing reduced-effect variants retain their negative conditions
-and value-formatting handlers. Nonnumeric boolean effects remain unchanged.
-The semantic list needs review if a game update adds new mixed-sign altar stats.
+Clear is a new journaled change, so it removes the current color instead of
+restoring an earlier color. Undoing a clear restores the actual pre-clear
+archive text. Already-plain text is recorded as a completed no-op, allowing its
+saved rule to be cleared without a resource write. Undo does not restore a draft
+color that was never applied.
 
-English and Traditional Chinese remain independent. Existing resistance keys
-and legacy English-only resistance blocks remain compatible. The one-time
-Chinese rule inheritance behavior is unchanged.
+Scoped altar changes retain their complete-block write and undo boundary.
+Other languages and value branches are preserved. Legacy shared-color migration
+and the associated altar block share a `ClearGroup`. Selecting either record
+for undo includes that entire group, but not unrelated clears from the same
+button operation. A newer edit or unresolved member blocks the whole group's
+undo. A recorded failed forward step remains `not-applied` when an undo confirms
+that it already has its original contents.
 
-## Migration and undo
+## Persistence and recovery
 
-Catalog refresh moves an old broad rule to its negative altar key only. Positive
-keys never inherit that saved color. Undo reconciliation still precedes rule
-migration, and the catalog is saved before migrated settings.
+`ClearsColor` and optional `ClearGroup` default to false/null in older JSON.
+Completed clear/undo records synchronize saved rules after archive readback.
+Every member of the same clear group and operation batch must be applied before
+that group's settings synchronize. Pending synchronization is retained across
+restart; prepared/unknown writes still require archive reconciliation.
 
-Applying a scoped rule restores an old shared color only when its exact applied
-journal history proves ownership. If a language has no existing local negative
-branch, that actually applied shared color is carried into the new negative
-branch and included in the same block journal. This also preserves the negative
-color when the first selected edit is a positive or other-language row. An
-existing local branch wins, and a selected negative color overrides the carry.
-Cleared settings are not repopulated merely because a color is still applied.
-
-Changes to one stat share a complete physical block and must be undone newest
-first across signs and languages. Rule records include optional language and
-condition metadata; old JSON records remain readable. Undoing the first local
-block removes that block and aligns its recorded rules; it does not recolor the
-restored shared description. This is the existing initial-scope undo behavior.
-
-Production preparation reparses generated blocks and checks unique rule keys,
-language, numeric conditions and resulting text. Existing exact block matching,
-encoding/format preservation and byte-reversibility guards remain in place.
+Restoring a legacy shared rule also remaps it to the current scoped catalog key.
+Carrying an unselected legacy color into an altar branch does not repopulate a
+cleared setting. Existing hashes, conflict checks, atomic JSON replacement and
+readback are reused. Preserve the complete `data` directory when moving the app.
+The journal is not a full GGPK backup. No dependency or database migration was
+introduced.
 
 ## Observed verification
 
-- Project-local .NET 8 Release compiler baseline, final build, and publication
-  build: 0 warnings, 0 errors. Framework-dependent publish completed for
-  Windows x64. A self-contained Windows x64 single-file publish also completed;
-  its .NET runtime is included and Oodle remains a separate DLL beside the EXE.
-- Read-only import using the new assembly succeeded against the current GGPK:
-  2,347 English entries and 2,316 Traditional Chinese entries. Both languages
-  still resolve 232 of 233 choices; the existing Grasping Vines gap is unchanged.
-- All 22 saved colors are retained. One English broad physical-reduction red
-  rule moved to the negative altar key. The four positive physical-reduction /
-  armour rows across both languages have no saved colors.
-- The program/catalog update preserved all 30 prior history records. The user
-  subsequently authorized one real apply operation, which added two records and
-  marked the original broad physical-reduction change undone. There are now 32
-  records and no prepared, unknown or conflict entries.
-- The four current altar DAT resources match the earlier inspected resources by
-  SHA-256. The three current CSD resources were also extracted read-only.
-- The installed assembly matches the published assembly and reports 0.1.2.
-- With the game, launcher and editor closed, one call to the installed
-  `AppController.ApplyAsync` applied the 22 configured rules. It reported two
-  applied changes, 17 unchanged skips after block grouping, and no notices.
-  The actual writes restored the shared English physical-reduction text and
-  inserted the dedicated altar block.
-- An independent readback of the three resources matched all 22 saved colors.
-  English physical reduction is red only for `#|-1`; `0` and `1|#` are plain.
-  Traditional Chinese physical reduction remains uncolored as configured, and
-  both shared physical-reduction descriptions are plain.
-- Readback resource hashes match the journal. Reversing the two recorded edits
-  in memory reconstructs the exact pre-apply resources, proving no unrecorded
-  resource bytes changed. No actual undo was performed. Settings are byte-identical
-  to the pre-apply snapshot; archive path, codec preference and languages remain
-  unchanged.
-- Combined source review and whitespace checks passed. The locked dependency
-  file is unchanged; no production dependency was added.
+- Project-local .NET 8 Release compiler baseline and final build both passed
+  with zero warnings and zero errors:
+  `dotnet build GgpkColorizer.csproj -c Release --no-restore`.
+- Framework-dependent local publishing uses
+  `dotnet publish GgpkColorizer.csproj -c Release --no-restore --self-contained false`.
+  This installation uses its existing Windows Desktop runtime and adjacent
+  Oodle DLL; it is separate from the self-contained release ZIP.
+- Independent static review covered absent saved rules, ownership history,
+  repeated recolors/undos, scoped signs/languages, no-op completion, linked
+  legacy recovery, partial results and settings synchronization.
+- The running local installation was closed normally, fully backed up, updated
+  and reopened. All five app files match the final publish hashes. All five
+  existing data files are byte-identical before installation and after startup.
+  The new process has a window titled "PoE 詞綴上色器" and reports responding;
+  no control interactions or visual acceptance were performed.
+- The user subsequently authorized one real English Vulnerability clear through
+  the installed assembly's `ClearColorsAsync`: one applied, zero skipped and no
+  notices. Independent read-only extraction verified that the shared description
+  resource changed only by removing the single red wrapper. Map and altar
+  resources and saved settings are byte-identical. The new clear record is
+  applied, rules-synchronized and matches both resource hashes.
+- No automated suite or UI/browser automation was run. Real undo, scoped altar
+  clear, interrupted-write recovery and in-game rendering remain NOT RUN. This
+  real clear verifies only the ordinary English entry with an absent saved rule.
 
-Local evidence is under `work/checks/signed-values/`: `baseline.txt`,
-`final-build.txt`, `publish.txt`, `installed-import.txt`,
-`preview-preservation.json`, `installed-preservation.json`, and archive metadata
-snapshots. Pre-update program files and the complete local data folder are also
-retained there. The effect-by-effect audit and plan are in the workspace outputs.
-The authorized apply evidence is in `apply-2026-11-17-01/`, including
-`selection.json`, `apply-result.json`, `new-records.json`,
-`readback-verification.json`, and before/after resources. Game resources and
-private JSON are excluded from the source distribution.
+Evidence is under `work/checks/clear-color-fix-20261124/`, including compiler,
+publish, delivery and startup records. The final compiled files in
+`work/clear-color-release-20261124/` are installed at
+`outputs/PoE-Modifier-Colorizer/`. The delivery record lists installed hashes and
+the preserved-data comparison. Temporary installation/data backups and extracted
+game snapshots are excluded from the release; their cleanup status is recorded
+in `work/checks/release-v0.1.3-20261124/cleanup.json`. Small verification reports
+and the active installation's settings and undo history are retained.
 
-## Acceptance boundaries and next action
+## Current issue evidence and user action
 
-The program and local catalog/settings are updated in place, and the configured
-rules have now been applied once to the GGPK. The game can be reopened for visual
-verification; another apply is not needed for this batch.
+Read-only inspection on 2026-11-24 found that the English
+`map_player_has_level_X_vulnerability` setting was absent while the archive
+retained `<colour:red>{{Players are Cursed with Vulnerability}}`.
+Record `4841209b0e7a4e7087a5d5402b87e190` was applied with no undo.
+Evidence is under `work/checks/vulnerability-clear-20261124/`.
 
-No test suite, UI automation or browser automation was run. Real GGPK undo,
-interrupted-write recovery and in-game rendering remain NOT RUN. The successful
-write and exact readback do not prove game-engine override precedence or visual
-acceptance. Per-change journals are not a complete GGPK backup.
+The subsequent authorized clear has now removed the wrapper. Its record is
+`920557ec024b44f29df3ab8d138540ea`; the resulting shared resource SHA-256 is
+`EA521325A1682B922C6C8327F1BADFC40C69C7F1373919EBCC04DF3B4D77DBE0`.
+The action ran once through the installed API, not through the UI. The user can
+reopen the game for visual confirmation; no further clear is needed for this
+verified operation. Operation output, before/after hashes and readback checks are
+in `work/checks/vulnerability-clear-apply-20261124-01/`. The full data/resource
+snapshots used for those checks are temporary and not part of the release.
 
-## Release artifacts
+## Historical release boundary
 
-`PoE-Modifier-Colorizer-0.1.2-win-x64-complete.zip` is a clean distribution
-containing the self-contained EXE, the existing `oo2core.dll`, matching source,
-quick-start instructions and third-party notices. It excludes local settings,
-catalogs, comparison results, undo history and game resources. The ZIP entries
-and EXE/DLL/source hashes were checked after creation. The separate EXE asset
-still needs `oo2core.dll` beside it. The combined package has not been launched
-or verified in-game; it is prepared as a prerelease.
+Published v0.1.2 source is the base commit above and lacks this clear fix.
+Earlier 2026-11-17 evidence
+verified an authorized altar-value apply, resource readback and in-memory
+byte-exact reversal; it did not verify real undo or game rendering. That evidence
+remains under `work/checks/signed-values/` and does not verify this later fix.
 
-The Oodle binary contains version string `2.9.10` and matches the DLL from the
-LibGGPK3 v2.7.5 Windows x64 tool archive. Oodle is not covered by this project's
-AGPL license. Its redistribution permission and compatibility with the AGPL
-components remain unconfirmed. `licenses/Oodle-NOTICE.txt` records its origin
-and status.
+The v0.1.3 complete ZIP contains the self-contained Windows x64 EXE,
+`oo2core.dll`, source from the release commit and notices. It excludes personal
+settings, catalogs, undo history and game resources. Keep the EXE and DLL
+adjacent, and preserve an existing installation's complete `data` directory when
+upgrading. The older unversioned installation ZIP contains user data and is not
+a clean release asset. Package/in-game acceptance remains separate from the
+observed local clear and compiler checks.
 
-The older unversioned `PoE-Modifier-Colorizer.zip` is the local installation
-archive and contains user data; it is not the release asset. Preserve the whole
-generated `data` directory when moving an existing installation.
+Oodle 2.9.10 is a proprietary component from the LibGGPK3 v2.7.5 Windows x64 tool
+archive. Redistribution permission and AGPL compatibility remain unconfirmed;
+see `licenses/Oodle-NOTICE.txt`. No new licensing conclusion was made here.

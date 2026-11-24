@@ -267,8 +267,8 @@ public sealed class MainForm : Form
         _faction.SelectedIndexChanged += (_, _) => ChangeAltarFilter();
         _target.SelectedIndexChanged += (_, _) => ChangeAltarFilter();
         _side.SelectedIndexChanged += (_, _) => ChangeAltarFilter();
-        _setColor.Click += (_, _) => SetSelectedColor(clear: false);
-        _clearColor.Click += (_, _) => SetSelectedColor(clear: true);
+        _setColor.Click += (_, _) => SetSelectedColor();
+        _clearColor.Click += async (_, _) => await ClearSelectedColorsAsync();
         _modifierGrid.SelectionChanged += (_, _) => UpdatePreview();
         _comparisonGrid.CellContentClick += OpenComparisonSource;
         _applySelected.Click += async (_, _) => await ApplyAsync(SelectedModifierKeys());
@@ -643,9 +643,12 @@ public sealed class MainForm : Form
         _historyGrid.Rows.Clear();
         foreach (ChangeRecord change in _controller.History.OrderByDescending(item => item.CreatedAt))
         {
+            string action = change.UndoOf is not null
+                ? "action.undo"
+                : change.ClearsColor ? "action.clear" : "action.change";
             int index = _historyGrid.Rows.Add(
                 change.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
-                _text[change.UndoOf is null ? "action.change" : "action.undo"],
+                _text[action],
                 _text.Status(change.Status),
                 DisplayHistoryLanguage(change),
                 Display(change.Modifier.Template),
@@ -828,7 +831,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private void SetSelectedColor(bool clear)
+    private void SetSelectedColor()
     {
         Modifier[] selected = SelectedModifiers();
         if (selected.Length == 0)
@@ -836,8 +839,8 @@ public sealed class MainForm : Form
             SetStatus(_text["noSelection"]);
             return;
         }
-        string? colorName = clear ? null : (_color.SelectedItem as GameColor)?.Name;
-        if (!clear && colorName is null)
+        string? colorName = (_color.SelectedItem as GameColor)?.Name;
+        if (colorName is null)
         {
             SetStatus(_text["noColor"]);
             return;
@@ -846,6 +849,30 @@ public sealed class MainForm : Form
             _controller.SetRule(modifier.Key, colorName);
         TrySaveSettings();
         PopulateModifiers();
+    }
+
+    private async Task ClearSelectedColorsAsync()
+    {
+        string[] keys = SelectedModifiers()
+            .Select(modifier => modifier.Key)
+            .ToArray();
+        if (keys.Length == 0)
+        {
+            SetStatus(_text["noSelection"]);
+            return;
+        }
+        if (!EnsureArchivePath())
+            return;
+        await RunExclusiveAsync(writing: true, async cancellationToken =>
+        {
+            OperationResult result = await _controller.ClearColorsAsync(
+                keys,
+                new Progress<string>(SetStatus),
+                cancellationToken);
+            PopulateHistory();
+            PopulateModifiers();
+            ShowResult(result);
+        });
     }
 
     private void ChooseArchive()

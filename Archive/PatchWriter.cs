@@ -8,7 +8,8 @@ internal sealed class PatchWriter(ChangeJournal journal)
     internal sealed record Edit(Modifier Modifier, string Expected, string Replacement,
         bool AllowOurColor, string? UndoOf = null, string? ExpectedBlock = null,
         string? ReplacementBlock = null, IReadOnlyList<string>? AlsoUndoes = null,
-        IReadOnlyList<RuleChange>? RuleChanges = null);
+        IReadOnlyList<RuleChange>? RuleChanges = null, bool ClearsColor = false,
+        string? ClearGroup = null);
 
     public OperationResult Apply(string archivePath, string codecPath, IReadOnlyList<Edit> edits,
         IProgress<string>? progress, CancellationToken cancellationToken)
@@ -52,15 +53,17 @@ internal sealed class PatchWriter(ChangeJournal journal)
                 var replacements = new Dictionary<string, string>();
                 var blockReplacements = new List<Edit>();
                 var resourceChanges = new List<ChangeRecord>();
-                foreach (Edit edit in group)
+                foreach (Edit requestedEdit in group)
                 {
+                    Edit edit = requestedEdit;
                     if (IsBlockEdit(edit))
                     {
                         string statId = edit.Modifier.StatIds.Single();
                         string currentBlock = document.GetSingleStatBlock(statId);
                         if (currentBlock == edit.ReplacementBlock)
                         {
-                            if (edit.UndoOf is not null || edit.AlsoUndoes?.Count > 0)
+                            if (edit.UndoOf is not null || edit.AlsoUndoes?.Count > 0 ||
+                                edit.ClearsColor)
                             {
                                 changes.Add(CreateNoOpChange(
                                     edit,
@@ -103,9 +106,21 @@ internal sealed class PatchWriter(ChangeJournal journal)
                         skipped++;
                         continue;
                     }
+                    if (edit.ClearsColor)
+                    {
+                        string plain = ColorRemoval.RestorePlainText(
+                            current, edit.Expected, ownerPath, journal);
+                        edit = edit with
+                        {
+                            Expected = current.Template,
+                            Replacement = plain,
+                            AllowOurColor = false,
+                        };
+                    }
                     if (current.Template == edit.Replacement)
                     {
-                        if (edit.UndoOf is not null || edit.AlsoUndoes?.Count > 0)
+                        if (edit.UndoOf is not null || edit.AlsoUndoes?.Count > 0 ||
+                            edit.ClearsColor)
                         {
                             changes.Add(CreateNoOpChange(
                                 edit with { Modifier = current },
@@ -285,6 +300,8 @@ internal sealed class PatchWriter(ChangeJournal journal)
         {
             BatchId = batchId,
             UndoOf = edit.UndoOf,
+            ClearsColor = edit.ClearsColor,
+            ClearGroup = edit.ClearGroup,
             ArchivePath = archivePath,
             Modifier = edit.Modifier,
             Before = edit.Expected,
@@ -305,6 +322,8 @@ internal sealed class PatchWriter(ChangeJournal journal)
         {
             BatchId = batchId,
             UndoOf = edit.UndoOf,
+            ClearsColor = edit.ClearsColor,
+            ClearGroup = edit.ClearGroup,
             ArchivePath = archivePath,
             Modifier = edit.Modifier,
             Before = edit.Replacement,

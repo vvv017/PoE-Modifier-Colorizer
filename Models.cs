@@ -69,6 +69,8 @@ public sealed class ChangeRecord
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string BatchId { get; set; } = "";
     public string? UndoOf { get; set; }
+    public bool ClearsColor { get; set; }
+    public string? ClearGroup { get; set; }
     public bool RulesSynchronized { get; set; }
     public string ArchivePath { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

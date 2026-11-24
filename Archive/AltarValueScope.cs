@@ -91,6 +91,7 @@ internal static class AltarValueScope
             string currentBlock = altar.GetSingleStatBlock(scope.StatId);
             var rules = new List<RuleChange>();
             var inheritedLanguages = new HashSet<string>(StringComparer.Ordinal);
+            string? clearGroup = null;
             foreach (string language in Languages)
             {
                 Modifier source = GetSource(shared, scope.StatId, language);
@@ -99,6 +100,18 @@ internal static class AltarValueScope
                     archivePath,
                     journal);
                 if (restore is null) continue;
+                if (group.First().ClearsColor)
+                {
+                    clearGroup ??= Guid.NewGuid().ToString("N");
+                    // Clearing must be able to undo both the shared restore and local block.
+                    restore = restore with
+                    {
+                        UndoOf = null,
+                        AlsoUndoes = null,
+                        ClearsColor = true,
+                        ClearGroup = clearGroup,
+                    };
+                }
                 prepared.Add(restore);
                 if (!values.LocalNegativeLanguages.Contains(language))
                 {
@@ -121,6 +134,14 @@ internal static class AltarValueScope
                 string before = replacesInherited
                     ? plain
                     : GetValue(values, language, condition);
+                if (edit.ClearsColor)
+                {
+                    ColorRemoval.RestorePlainText(
+                        edit.Modifier with { Template = before },
+                        edit.Expected,
+                        archivePath,
+                        journal);
+                }
                 rules.Add(new RuleChange(
                     edit.Modifier.Key,
                     before,
@@ -169,6 +190,7 @@ internal static class AltarValueScope
                 ReplacementBlock = replacementBlock,
                 AllowOurColor = false,
                 RuleChanges = rules,
+                ClearGroup = clearGroup,
             });
         }
         return prepared;
